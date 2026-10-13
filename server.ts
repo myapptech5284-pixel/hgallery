@@ -174,7 +174,13 @@ function loadCustomerSalesData(customers: any[]) {
   const itemsByInvoice = new Map<string, any[]>();
   for (const item of invoiceItems) {
     const list = itemsByInvoice.get(item.invoiceId) || [];
-    list.push(item);
+    // Per-line profit AND cost are deliberately withheld from every
+    // customer-facing payload (directory, ledger, supplier ledger). Both are
+    // management figures, and shipping either one lets the other be derived by
+    // subtraction. The raw values stay in the invoice_items table, which the
+    // reports endpoints read directly, so nothing is lost there.
+    const { itemProfit, frozenPurchaseCost, ...customerVisibleItem } = item;
+    list.push(customerVisibleItem);
     itemsByInvoice.set(item.invoiceId, list);
   }
 
@@ -293,7 +299,6 @@ function summarizeCustomer(
   let totalPaid = 0;
   let totalRemaining = 0;
   let totalReturns = 0;
-  let totalProfit = 0;
   let lastActivityDate: string | undefined;
 
   for (const invoice of invoices) {
@@ -302,9 +307,6 @@ function summarizeCustomer(
     totalDiscount += Number(invoice.totalDiscount) || 0;
     totalPaid += Number(invoice.paid) || 0;
     totalRemaining += Number(invoice.remaining) || 0;
-    for (const item of invoice.items || []) {
-      totalProfit += Number(item.itemProfit) || 0;
-    }
     if (invoice.date && (!lastActivityDate || invoice.date > lastActivityDate)) {
       lastActivityDate = invoice.date;
     }
@@ -313,7 +315,6 @@ function summarizeCustomer(
   for (const record of returns) {
     const refund = Number(record.totalRefund) || 0;
     totalReturns += refund;
-    totalProfit -= Number(record.profitReversed) || 0;
     const date = String(record.date || '').substring(0, 10);
     if (date && (!lastActivityDate || date > lastActivityDate)) lastActivityDate = date;
   }
