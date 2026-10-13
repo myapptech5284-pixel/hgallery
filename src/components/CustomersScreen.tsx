@@ -37,7 +37,6 @@ const EMPTY_SUMMARY: CustomerSummary = {
   totalRemaining: 0,
   totalReturns: 0,
   netSales: 0,
-  totalProfit: 0,
   installmentTotal: 0,
   installmentPaid: 0,
   installmentRemaining: 0,

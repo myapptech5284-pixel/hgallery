@@ -24,7 +24,6 @@ import {
   ChevronDown,
   ChevronUp,
   Store,
-  BookOpen,
   Wallet,
   TrendingUp,
   RefreshCw,
@@ -224,14 +223,15 @@ export const CustomerLedgerModal: React.FC<CustomerLedgerModalProps> = ({
             </div>
           ) : !ledger || !summary ? null : (
             <>
-              {/* Summary cards */}
-              <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 mb-4">
+              {/* Summary cards — profit is deliberately not shown here; it is
+                  a management figure and belongs in the reports, not on a
+                  customer's record. */}
+              <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 mb-4">
                 {card('إجمالي الفواتير', money(summary.totalInvoiced), 'text-slate-900', Receipt, `${summary.invoiceCount} فاتورة`)}
                 {card('صافي المشتريات', money(summary.netSales), 'text-emerald-700', Wallet, `مسترجع: ${money(summary.totalReturns)}`)}
                 {card('إجمالي المسدد', money(summary.totalPaid), 'text-emerald-600', CheckCircle2, `خصومات: ${money(summary.totalDiscount)}`)}
                 {card('المستحق على العميل', money(summary.totalRemaining), 'text-rose-600', AlertCircle, 'الرصيد النهائي للعميل')}
                 {card('أقساط متبقية', money(summary.installmentRemaining), 'text-amber-700', CreditCard, `من إجمالي ${money(summary.installmentTotal)}`)}
-                {card('صافي الربح', money(summary.totalProfit), 'text-sky-700', TrendingUp, 'ربح الفواتير بعد المرتجعات')}
               </div>
 
               {ledger.matchInfo.nameSharedWithAnotherCustomer && (
@@ -396,15 +396,37 @@ export const CustomerLedgerModal: React.FC<CustomerLedgerModalProps> = ({
                                   <td className="p-3 font-mono text-slate-600 text-[11px] whitespace-nowrap">
                                     {invoice.date} {invoice.time}
                                   </td>
-                                  <td className="p-3 text-slate-600">
-                                    <span className="inline-flex items-center gap-1">
-                                      {invoice.location === 'stationery' ? (
-                                        <BookOpen className="w-3 h-3 text-indigo-400" />
-                                      ) : (
-                                        <Store className="w-3 h-3 text-emerald-400" />
-                                      )}
-                                      {LOCATION_LABEL[invoice.location] || invoice.location}
-                                    </span>
+                                  <td className="p-3">
+                                    {/* A single invoice may mix branches, so we
+                                        show the real split from its line items. */}
+                                    {(() => {
+                                      const locs = Array.from(
+                                        new Set(
+                                          (invoice.items || [])
+                                            .map((it) => it.location || invoice.location)
+                                            .filter(Boolean)
+                                        )
+                                      );
+                                      if (locs.length === 0) {
+                                        return <span className="text-slate-400">-</span>;
+                                      }
+                                      return (
+                                        <span className="inline-flex flex-col gap-0.5">
+                                          {locs.map((loc) => (
+                                            <span
+                                              key={loc}
+                                              className={`px-1.5 py-0.5 rounded text-[9px] font-bold inline-block w-fit ${
+                                                loc === 'stationery'
+                                                  ? 'bg-indigo-100 text-indigo-700'
+                                                  : 'bg-emerald-100 text-emerald-700'
+                                              }`}
+                                            >
+                                              {LOCATION_LABEL[loc] || loc}
+                                            </span>
+                                          ))}
+                                        </span>
+                                      );
+                                    })()}
                                   </td>
                                   <td className="p-3">
                                     <span
@@ -454,6 +476,7 @@ export const CustomerLedgerModal: React.FC<CustomerLedgerModalProps> = ({
                                           <thead className="bg-slate-50 text-slate-500 text-[11px]">
                                             <tr>
                                               <th className="p-2">الصنف</th>
+                                              <th className="p-2">الموقع</th>
                                               <th className="p-2">الكود</th>
                                               <th className="p-2 text-center">الكمية</th>
                                               <th className="p-2 text-center">سعر البيع</th>
@@ -467,6 +490,17 @@ export const CustomerLedgerModal: React.FC<CustomerLedgerModalProps> = ({
                                             {(invoice.items || []).map((item) => (
                                               <tr key={item.productId + item.sku}>
                                                 <td className="p-2 font-sans text-slate-700 font-semibold">{item.productName}</td>
+                                                <td className="p-2">
+                                                  <span
+                                                    className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
+                                                      (item.location || invoice.location) === 'stationery'
+                                                        ? 'bg-indigo-100 text-indigo-700'
+                                                        : 'bg-emerald-100 text-emerald-700'
+                                                    }`}
+                                                  >
+                                                    {LOCATION_LABEL[item.location || invoice.location] || '-'}
+                                                  </span>
+                                                </td>
                                                 <td className="p-2 text-slate-500">{item.sku}</td>
                                                 <td className="p-2 text-center">{item.quantity}</td>
                                                 <td className="p-2 text-center">{money(item.actualSalePrice)}</td>

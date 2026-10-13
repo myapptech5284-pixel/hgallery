@@ -48,6 +48,7 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successInvoice, setSuccessInvoice] = useState<Invoice | null>(null);
+  const [successNotice, setSuccessNotice] = useState<string | null>(null);
 
   // Drafts (suspended invoices)
   const [drafts, setDrafts] = useState<InvoiceDraft[]>([]);
@@ -57,11 +58,16 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Load products for the active location
+  // Load products for BOTH branches. A single invoice may mix gallery and
+  // stationery items; the two stay separate because every product row (and
+  // therefore its stock) belongs to exactly one location.
   const loadProducts = async () => {
     try {
-      const data = await api.getProducts({ location: activeLocation });
-      setProducts(data);
+      const [galleryData, stationeryData] = await Promise.all([
+        api.getProducts({ location: 'gallery' }),
+        api.getProducts({ location: 'stationery' }),
+      ]);
+      setProducts([...(galleryData || []), ...(stationeryData || [])]);
     } catch (err) {
       console.error('Failed to load products for POS:', err);
     }
@@ -69,6 +75,10 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
 
   useEffect(() => {
     loadProducts();
+  }, []);
+
+  // Reset the sale when the cashier switches the global branch toggle.
+  useEffect(() => {
     setCartItems([]);
     setSearchQuery('');
     setMatchingProducts([]);
@@ -147,6 +157,9 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
           frozenPurchaseCost: product.purchaseCost,
           itemProfit,
           total: actualSalePrice * 1,
+          // Stamp the branch this line belongs to so stock, sales and profit
+          // stay attributed correctly even inside a mixed invoice.
+          location: product.location,
         };
         return [...prev, newItem];
       }
@@ -216,6 +229,23 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
   const totalDiscount = cartItems.reduce((acc, it) => acc + it.discount * it.quantity, 0);
   const total = Math.max(0, subtotal - totalDiscount);
   const totalProfit = cartItems.reduce((acc, it) => acc + it.itemProfit, 0);
+
+  // Per-branch split of the running sale, so the cashier can see at a glance
+  // how much of this invoice belongs to the gallery and how much to the
+  // stationery. Stock stays separate — nothing is merged.
+  const branchSplit = cartItems.reduce(
+    (acc, it) => {
+      const key = it.location || activeLocation;
+      const net = it.actualSalePrice * it.quantity;
+      if (!acc[key]) acc[key] = { total: 0, profit: 0, count: 0 };
+      acc[key].total += net;
+      acc[key].profit += it.itemProfit;
+      acc[key].count += it.quantity;
+      return acc;
+    },
+    {} as Record<string, { total: number; profit: number; count: number }>
+  );
+  const isMixedCart = Object.keys(branchSplit).length > 1;
   // When payment is installment, add the optional percent on top of total
   const installmentSurcharge = paymentMethod === 'installment' && installmentPercent > 0
     ? total * (installmentPercent / 100)
@@ -233,6 +263,7 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
 
   const handleCompleteSale = async () => {
     setErrorMessage(null);
+    setSuccessNotice(null);
     if (cartItems.length === 0) {
       setErrorMessage('لا توجد أصناف في الفاتورة');
       return;
@@ -287,13 +318,21 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
 
       const res = await api.createInvoice(payload);
       if (res.success && res.invoiceId) {
+        // The server files walk-in customers automatically (cash with a name +
+        // phone, or always for installment). Tell the cashier so it is obvious
+        // the directory now knows this person.
+        if ((res as any).createdCustomerId) {
+          setSuccessNotice(
+            `تم حفظ العميل «${customerName.trim()}» في دليل العملاء تلقائياً`
+          );
+        }
         // Build completed invoice object for thermal receipt preview
         const newInvoice: Invoice = {
           id: res.invoiceId,
           invoiceNumber: res.invoiceNumber || 'HAWR-000',
           customerName: customerName.trim(),
           customerPhone: customerPhone.trim(),
-          location: activeLocation,
+          location: (res as any).primaryLocation || activeLocation,
           sellerId: currentUser.id,
           sellerName: currentUser.name,
           sellerCode: currentUser.employeeCode,
@@ -688,7 +727,7 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
 
           <div className="flex items-center gap-2 text-xs font-semibold px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-600">
             <Layers className="w-4 h-4 text-emerald-600" />
-            <span>الموقع: {activeLocation === 'gallery' ? 'المعرض' : 'المكتبة'}</span>
+            <span>البيع يشمل المعرض والمكتبة معاً</span>
           </div>
         </div>
 
@@ -713,7 +752,18 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
                       {prod.unit.substring(0, 2)}
                     </div>
                     <div>
-                      <span className="font-bold text-sm text-slate-800 block">{prod.name}</span>
+                      <span className="font-bold text-sm text-slate-800 flex items-center gap-1.5">
+                        {prod.name}
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
+                            prod.location === 'stationery'
+                              ? 'bg-indigo-100 text-indigo-700'
+                              : 'bg-emerald-100 text-emerald-700'
+                          }`}
+                        >
+                          {prod.location === 'stationery' ? 'المكتبة' : 'المعرض'}
+                        </span>
+                      </span>
                       <span className="text-xs text-slate-400 font-mono">الكود: {prod.sku} | القسم: {prod.category}</span>
                     </div>
                   </div>
@@ -798,7 +848,18 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
                     <tr key={index} className="hover:bg-slate-50/80 transition-colors">
                       <td className="p-3 text-slate-400 font-mono">{index + 1}</td>
                       <td className="p-3">
-                        <div className="font-bold text-slate-800">{item.productName}</div>
+                        <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                          {item.productName}
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
+                              (item.location || activeLocation) === 'stationery'
+                                ? 'bg-indigo-100 text-indigo-700'
+                                : 'bg-emerald-100 text-emerald-700'
+                            }`}
+                          >
+                            {(item.location || activeLocation) === 'stationery' ? 'المكتبة' : 'المعرض'}
+                          </span>
+                        </div>
                         <div className="text-[10px] text-slate-400 font-mono">
                           كود: {item.sku}
                         </div>
@@ -1073,6 +1134,38 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
                 <span>الإجمالي {installmentSurcharge > 0 ? '(بعد الزيادة)' : 'النهائي'}:</span>
                 <span className="text-emerald-600">{(Number(finalTotal) || 0).toFixed(2)} ج.م</span>
               </div>
+
+              {/* Per-branch split: the gallery and the stationery stay
+                  separate in stock, sales and profit even inside one invoice. */}
+              {cartItems.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-slate-100 space-y-1">
+                  <div className="text-[10px] font-bold text-slate-500">
+                    {isMixedCart ? 'توزيع الفاتورة على الفروع' : 'توزيع الفاتورة'}
+                  </div>
+                  {(['gallery', 'stationery'] as const).map((loc) => {
+                    const row = branchSplit[loc];
+                    if (!row) return null;
+                    return (
+                      <div
+                        key={loc}
+                        className={`flex justify-between text-[11px] px-2 py-1 rounded ${
+                          loc === 'gallery' ? 'bg-emerald-50 text-emerald-800' : 'bg-indigo-50 text-indigo-800'
+                        }`}
+                      >
+                        <span className="font-bold">
+                          {loc === 'gallery' ? 'المعرض' : 'المكتبة'} ({row.count})
+                        </span>
+                        <span className="font-mono font-bold">{row.total.toFixed(2)} ج.م</span>
+                      </div>
+                    );
+                  })}
+                  {isMixedCart && (
+                    <div className="text-[10px] text-slate-400 leading-relaxed pt-0.5">
+                      فاتورة واحدة تجمع صنفين من الفرعين — المخزون والتوريد لكل فرع يبقي منفصلاً تماماً.
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -1145,7 +1238,21 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
 
       {/* Success Modal with Thermal Receipt Preview */}
       {successInvoice && (
-        <ThermalReceipt invoice={successInvoice} onClose={() => setSuccessInvoice(null)} />
+        <>
+          {successNotice && (
+            <div className="mb-3 p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-xl flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span className="font-bold">{successNotice}</span>
+            </div>
+          )}
+          <ThermalReceipt
+            invoice={successInvoice}
+            onClose={() => {
+              setSuccessInvoice(null);
+              setSuccessNotice(null);
+            }}
+          />
+        </>
       )}
     </div>
   );
