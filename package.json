@@ -1,0 +1,106 @@
+{
+  "name": "hawr-sales-system",
+  "private": true,
+  "version": "5.1.6",
+  "description": "نظام إدارة معرض حور - تطبيق Windows مستقل",
+  "author": {
+    "name": "Hawr Gallery Inc."
+  },
+  "type": "module",
+  "main": "electron-main.cjs",
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build:web": "vite build",
+    "build:server": "esbuild server.ts --bundle --platform=node --format=cjs --external:vite --external:@vitejs/plugin-react --external:@tailwindcss/vite --sourcemap --outfile=dist/server.cjs",
+    "copy:wasm": "node -e \"require('fs').copyFileSync(require.resolve('sql.js/dist/sql-wasm.wasm'), 'dist/sql-wasm.wasm')\"",
+    "build": "npm run build:web && npm run build:server && npm run copy:wasm",
+    "start": "node dist/server.cjs",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "prebuild:win": "powershell -NoProfile -ExecutionPolicy Bypass -File build/pre-extract-wincodesign.ps1",
+    "fix:7za": "powershell -NoProfile -ExecutionPolicy Bypass -File build/7za-wrapper-build.ps1",
+    "electron:build": "npm run build && npm run fix:7za && electron-builder --win nsis --x64",
+    "electron:dev": "electron ."
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.1.14",
+    "@vitejs/plugin-react": "^5.0.4",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "jsbarcode": "^3.12.3",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "qrcode": "^1.5.4",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "sql.js": "^1.14.2",
+    "vite": "^6.2.3",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.14.0",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/sql.js": "^1.4.11",
+    "autoprefixer": "^10.4.21",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.25.0",
+    "tailwindcss": "^4.1.14",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.3",
+    "vitest": "^4.1.11"
+  },
+  "build": {
+    "appId": "com.hawr.gallery",
+    "productName": "نظام إدارة معرض حور",
+    "copyright": "Hawr Gallery Inc.",
+    "directories": {
+      "output": "dist-installer-v40f",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron-main.cjs",
+      "preload.cjs",
+      "package.json",
+      "!node_modules/**/test/**",
+      "!node_modules/**/*.md",
+      "!node_modules/**/*.d.ts",
+      "!node_modules/.bin/**"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "dist/server.cjs",
+      "dist/sql-wasm.wasm"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "HawrGallery-Setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "نظام إدارة معرض حور",
+      "installerLanguages": [
+        "ar",
+        "en_US"
+      ],
+      "language": "1049"
+    }
+  }
+}

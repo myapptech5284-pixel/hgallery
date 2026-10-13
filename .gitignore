@@ -1,0 +1,18 @@
+node_modules/
+dist/
+dist-installer-*/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Heavy Windows build artefacts that are regenerated locally by electron-builder
+# / the helper scripts. The build scripts themselves ARE tracked, because
+# 7za-wrapper-build.ps1 is what makes `npm run electron:build` work on a
+# machine without Developer Mode.
+build/7z2603-extra/
+build/tools/
+*.7z
+*.ico
+*.png

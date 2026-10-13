@@ -1,0 +1,6 @@
+{
+  "name": "نظام إدارة معرض حور للأدوات المنزلية",
+  "description": "نظام احترافي مستقل لإدارة المبيعات ونقاط البيع والمخزون المنفصل (المعرض والمكتبة) والأقساط والمصروفات والتقارير بدون إنترنت",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
