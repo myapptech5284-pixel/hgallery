@@ -576,7 +576,6 @@ export default function App() {
         {activeTab === 'invoices' && (
           <InvoicesScreen
             currentUser={currentUser}
-            activeLocation={activeLocation}
           />
         )}
 

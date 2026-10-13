@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { User, Product, LocationType, Invoice, InvoiceItem, InvoiceDraft } from '../types.ts';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { User, Product, LocationType, Invoice, InvoiceItem, InvoiceDraft, Customer } from '../types.ts';
 import { api } from '../services/api.ts';
 import { ThermalReceipt } from './ThermalReceipt.tsx';
 import {
@@ -38,6 +38,12 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
   const [cartItems, setCartItems] = useState<InvoiceItem[]>([]);
   const [customerName, setCustomerName] = useState('عميل نقدي');
   const [customerPhone, setCustomerPhone] = useState('');
+  // Autocomplete over the customer directory: typing in the name box offers
+  // already-registered customers so the cashier reuses an existing record
+  // (and its phone) instead of creating a near-duplicate at checkout.
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [isCustomerDropdownOpen, setIsCustomerDropdownOpen] = useState(false);
+  const [customerHighlight, setCustomerHighlight] = useState(0);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'installment'>('cash');
   const [paidAmount, setPaidAmount] = useState<number>(0);
   const [installmentDueDate, setInstallmentDueDate] = useState<string>('');
@@ -76,6 +82,87 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
   useEffect(() => {
     loadProducts();
   }, []);
+
+  // Customer directory for the name autocomplete. Loaded once per POS mount;
+  // the list is small (a gallery shop directory) and the cashier edits the
+  // same handful of customers all day.
+  const loadCustomers = async () => {
+    try {
+      const data = await api.getCustomers();
+      setCustomers(data || []);
+    } catch (err) {
+      console.error('Failed to load customers for POS autocomplete:', err);
+    }
+  };
+
+  useEffect(() => {
+    loadCustomers();
+  }, []);
+
+  // Hide suggestions once the cashier walks away from the name box, so a
+  // stale list never sits over the payment panel while they work.
+  useEffect(() => {
+    if (!isCustomerDropdownOpen) return;
+    const close = () => setIsCustomerDropdownOpen(false);
+    window.addEventListener('scroll', close, true);
+    return () => window.removeEventListener('scroll', close, true);
+  }, [isCustomerDropdownOpen]);
+
+  // Matching registered customers for what has been typed so far.
+  // Matches on name OR phone (the cashier often types either), tolerates
+  // Arabic spelling/extra spaces, and never suggests the placeholder.
+  const customerMatches = useMemo(() => {
+    const q = customerName.trim().toLowerCase();
+    if (!q || q === 'عميل نقدي') return [];
+    const norm = (s: string) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const matches = customers.filter(
+      (c) => norm(c.name).includes(q) || (c.phone || '').replace(/\s+/g, '').includes(q.replace(/\s+/g, ''))
+    );
+    // Exact name/phone first, then alphabetical for a stable, scannable list.
+    matches.sort((a, b) => {
+      const aExact = norm(a.name) === q || (a.phone || '').replace(/\s+/g, '') === q.replace(/\s+/g, '');
+      const bExact = norm(b.name) === q || (b.phone || '').replace(/\s+/g, '') === q.replace(/\s+/g, '');
+      if (aExact !== bExact) return aExact ? -1 : 1;
+      return norm(a.name).localeCompare(norm(b.name), 'ar');
+    });
+    return matches.slice(0, 8);
+  }, [customers, customerName]);
+
+  const applyCustomer = (c: Customer) => {
+    setCustomerName(c.name);
+    // Pull the phone across so the server's phone-matching can attach the
+    // sale to this existing customer record instead of creating a new one.
+    if (c.phone && !customerPhone.trim()) setCustomerPhone(c.phone);
+    setIsCustomerDropdownOpen(false);
+    setCustomerHighlight(0);
+    setErrorMessage(null);
+  };
+
+  const handleCustomerNameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!isCustomerDropdownOpen || customerMatches.length === 0) {
+      if (e.key === 'ArrowDown' && customerMatches.length > 0) {
+        e.preventDefault();
+        setIsCustomerDropdownOpen(true);
+        setCustomerHighlight(0);
+      }
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setCustomerHighlight((h) => (h + 1) % customerMatches.length);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setCustomerHighlight((h) => (h - 1 + customerMatches.length) % customerMatches.length);
+    } else if (e.key === 'Enter') {
+      // Only swallow Enter when it picks a suggestion; otherwise let it
+      // submit the form / move on as it normally would.
+      e.preventDefault();
+      applyCustomer(customerMatches[customerHighlight] || customerMatches[0]);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      setIsCustomerDropdownOpen(false);
+    }
+  };
 
   // Reset the sale when the cashier switches the global branch toggle.
   useEffect(() => {
@@ -642,7 +729,10 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
       }
       if (!mod) {
         if (e.key === 'Escape') {
-          if (isSearchDropdownOpen) {
+          if (isCustomerDropdownOpen) {
+            setIsCustomerDropdownOpen(false);
+            e.preventDefault();
+          } else if (isSearchDropdownOpen) {
             setIsSearchDropdownOpen(false);
             e.preventDefault();
           } else if (successInvoice) {
@@ -702,7 +792,7 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSubmitting, cartItems, paymentMethod, customerName, customerPhone, installmentDueDate, paidAmount, total, successInvoice, isSearchDropdownOpen]);
+  }, [isSubmitting, cartItems, paymentMethod, customerName, customerPhone, installmentDueDate, paidAmount, total, successInvoice, isSearchDropdownOpen, isCustomerDropdownOpen]);
 
   return (
     <div className="h-[calc(100vh-6.5rem)] flex flex-col p-4 bg-[#F1F5F9] overflow-hidden" dir="rtl">
@@ -989,12 +1079,50 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
                 <input
                   type="text"
                   value={customerName}
-                  onChange={(e) => setCustomerName(e.target.value)}
+                  onChange={(e) => {
+                    setCustomerName(e.target.value);
+                    setCustomerHighlight(0);
+                    setIsCustomerDropdownOpen(true);
+                  }}
+                  onFocus={() => {
+                    if (customerMatches.length > 0) setIsCustomerDropdownOpen(true);
+                  }}
+                  onKeyDown={handleCustomerNameKeyDown}
                   placeholder="اسم العميل"
+                  autoComplete="off"
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:outline-none focus:border-emerald-500 pl-8"
                 />
                 <UserIcon className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                {/* Registered-customer suggestions */}
+                {isCustomerDropdownOpen && customerMatches.length > 0 && (
+                  <div className="absolute z-40 top-full right-0 left-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden max-h-56 overflow-y-auto">
+                    {customerMatches.map((c, idx) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onMouseEnter={() => setCustomerHighlight(idx)}
+                        onClick={() => applyCustomer(c)}
+                        className={`w-full text-right px-3 py-2 flex items-center justify-between gap-2 border-b border-slate-50 last:border-b-0 transition-colors ${
+                          idx === customerHighlight ? 'bg-emerald-50' : 'hover:bg-slate-50'
+                        }`}
+                      >
+                        <span className="flex items-center gap-1.5 min-w-0">
+                          <UserIcon className="w-3 h-3 text-slate-400 shrink-0" />
+                          <span className="text-xs font-semibold text-slate-700 truncate">{c.name}</span>
+                        </span>
+                        {c.phone && (
+                          <span className="text-[10px] font-mono text-slate-400 shrink-0" dir="ltr">{c.phone}</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
+              {isCustomerDropdownOpen && customerMatches.length > 0 && (
+                <p className="text-[10px] text-slate-400 mt-1">
+                  اختر العميل من القائمة لتسجيل الرقم تلقائياً — ↑ ↓ للتنقل و Enter للاختيار
+                </p>
+              )}
             </div>
 
             <div>

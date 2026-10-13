@@ -1,7 +1,7 @@
 {
   "name": "hawr-sales-system",
   "private": true,
-  "version": "5.1.6",
+  "version": "6.0.3",
   "description": "نظام إدارة معرض حور - تطبيق Windows مستقل",
   "author": {
     "name": "Hawr Gallery Inc."
@@ -60,7 +60,7 @@
     "productName": "نظام إدارة معرض حور",
     "copyright": "Hawr Gallery Inc.",
     "directories": {
-      "output": "dist-installer-v40f",
+      "output": "dist-installer-v603",
       "buildResources": "build"
     },
     "files": [

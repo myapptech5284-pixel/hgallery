@@ -481,8 +481,6 @@ export const CustomerLedgerModal: React.FC<CustomerLedgerModalProps> = ({
                                               <th className="p-2 text-center">الكمية</th>
                                               <th className="p-2 text-center">سعر البيع</th>
                                               <th className="p-2 text-center">الخصم</th>
-                                              <th className="p-2 text-center">التكلفة</th>
-                                              <th className="p-2 text-center">الربح</th>
                                               <th className="p-2 text-center">الإجمالي</th>
                                             </tr>
                                           </thead>
@@ -505,8 +503,6 @@ export const CustomerLedgerModal: React.FC<CustomerLedgerModalProps> = ({
                                                 <td className="p-2 text-center">{item.quantity}</td>
                                                 <td className="p-2 text-center">{money(item.actualSalePrice)}</td>
                                                 <td className="p-2 text-center text-rose-600">{money(item.discount)}</td>
-                                                <td className="p-2 text-center text-slate-500">{money(item.frozenPurchaseCost)}</td>
-                                                <td className="p-2 text-center font-bold text-sky-700">{money(item.itemProfit)}</td>
                                                 <td className="p-2 text-center font-bold text-slate-800">{money(item.total)}</td>
                                               </tr>
                                             ))}

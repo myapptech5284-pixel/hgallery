@@ -514,7 +514,7 @@ function buildMenu() {
               type: 'info',
               title: 'حول البرنامج',
               message: 'نظام إدارة معرض حور',
-              detail: 'الإصدار: 5.1.6\nتطبيق Windows مستقل بدون سيرفر محلي أو متصفح.\n© Hawr Gallery Inc.',
+              detail: 'الإصدار: 6.0.3\nتطبيق Windows مستقل بدون سيرفر محلي أو متصفح.\n© Hawr Gallery Inc.',
               buttons: ['حسناً'],
             });
           },

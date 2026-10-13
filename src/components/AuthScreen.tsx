@@ -221,7 +221,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ isInitialized, onLoginSu
 
         <div className="mt-8 pt-4 border-t border-slate-100 flex items-center justify-between text-xs text-slate-400">
           <span>نظام محلي متكامل (Offline SQLite)</span>
-          <span>الإصدار 2.4.0 (Windows EXE)</span>
+          <span>الإصدار 6.0.3 (Windows EXE)</span>
         </div>
       </div>
     </div>

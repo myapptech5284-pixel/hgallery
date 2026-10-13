@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Invoice, LocationType, User, InvoiceItem } from '../types.ts';
+import { Invoice, User, InvoiceItem } from '../types.ts';
 import { api } from '../services/api.ts';
 import { ThermalReceipt } from './ThermalReceipt.tsx';
 import {
@@ -15,33 +15,62 @@ import {
 
 interface InvoicesScreenProps {
   currentUser: User;
-  activeLocation: LocationType;
 }
 
 // The server always attaches `items` to every invoice it returns from
 // GET /api/invoices, so rows are plain `Invoice` values here.
 type InvoiceWithItems = Invoice;
 
-export const InvoicesScreen: React.FC<InvoicesScreenProps> = ({
-  currentUser,
-  activeLocation,
-}) => {
+/**
+ * Which branch(es) an invoice actually touched.
+ *
+ * This screen deliberately does NOT split the gallery from the stationery:
+ * one list shows every saved invoice. A single invoice may mix both
+ * branches, so the badge is derived from its line items — `invoice_items.location`
+ * is the source of truth — and falls back to the header `location` for old
+ * rows that predate per-item locations.
+ */
+type BranchBadge = { kind: 'gallery' | 'stationery' | 'mixed'; label: string };
+
+function getInvoiceBranch(invoice: InvoiceWithItems): BranchBadge {
+  const itemLocations = new Set<string>();
+  for (const item of invoice.items || []) {
+    const loc = (item as InvoiceItem).location || invoice.location;
+    if (loc) itemLocations.add(loc);
+  }
+  if (itemLocations.size === 0) {
+    const loc = invoice.location;
+    if (loc === 'gallery') return { kind: 'gallery', label: 'معرض' };
+    if (loc === 'stationery') return { kind: 'stationery', label: 'مكتبة' };
+    return { kind: 'mixed', label: '—' };
+  }
+  if (itemLocations.size > 1) return { kind: 'mixed', label: 'معرض + مكتبة' };
+  const only = itemLocations.values().next().value;
+  if (only === 'gallery') return { kind: 'gallery', label: 'معرض' };
+  if (only === 'stationery') return { kind: 'stationery', label: 'مكتبة' };
+  return { kind: 'mixed', label: '—' };
+}
+
+export const InvoicesScreen: React.FC<InvoicesScreenProps> = ({ currentUser }) => {
   const [invoices, setInvoices] = useState<InvoiceWithItems[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterDate, setFilterDate] = useState('');
   const [filterPayment, setFilterPayment] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'cash' | 'installment'>('all');
+  // Optional branch narrowing on top of the unified list. 'all' (default)
+  // means "show everything" — the unified behaviour the screen is built for.
+  const [filterBranch, setFilterBranch] = useState<'all' | 'gallery' | 'stationery'>('all');
   const [selectedInvoice, setSelectedInvoice] = useState<InvoiceWithItems | null>(null);
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 15;
 
+  // Always load EVERY invoice regardless of the global branch toggle: the
+  // saved-invoices screen is one unified ledger for gallery + stationery.
   const fetchInvoices = async () => {
     setLoading(true);
     try {
-      const data = await api.getInvoices({
-        location: activeLocation,
-      });
+      const data = await api.getInvoices();
       setInvoices(data || []);
     } catch (err) {
       console.error('Failed to fetch invoices:', err);
@@ -53,7 +82,7 @@ export const InvoicesScreen: React.FC<InvoicesScreenProps> = ({
 
   useEffect(() => {
     fetchInvoices();
-  }, [activeLocation]);
+  }, []);
 
   // Keyboard shortcuts: Ctrl+P (print) and Ctrl+X/Esc (close view)
   useEffect(() => {
@@ -107,8 +136,16 @@ export const InvoicesScreen: React.FC<InvoicesScreenProps> = ({
     } else if (filterType === 'installment') {
       list = list.filter((i) => i.isInstallment);
     }
+    // Optional branch narrowing. Mixed invoices match BOTH branches so they
+    // never disappear when the cashier filters by one of them.
+    if (filterBranch !== 'all') {
+      list = list.filter((i) => {
+        const branch = getInvoiceBranch(i);
+        return branch.kind === 'mixed' || branch.kind === filterBranch;
+      });
+    }
     return list;
-  }, [invoices, searchQuery, filterDate, filterPayment, filterType]);
+  }, [invoices, searchQuery, filterDate, filterPayment, filterType, filterBranch]);
 
   const paged = useMemo(() => {
     const start = (page - 1) * PAGE_SIZE;
@@ -145,7 +182,7 @@ export const InvoicesScreen: React.FC<InvoicesScreenProps> = ({
             الفواتير المحفوظة
           </h1>
           <p className="text-xs text-slate-500 mt-1">
-            {activeLocation === 'gallery' ? 'فواتير المعرض' : 'فواتير المكتبة'} — كل عمليات البيع المسجلة
+            كل الفواتير المحفوظة — المعرض والمكتبة في صفحة واحدة
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -217,6 +254,18 @@ export const InvoicesScreen: React.FC<InvoicesScreenProps> = ({
             <option value="installment">قسط</option>
           </select>
         </div>
+        <div className="w-40">
+          <label className="block text-[10px] font-bold text-slate-500 mb-1">الفرع</label>
+          <select
+            value={filterBranch}
+            onChange={(e) => { setFilterBranch(e.target.value as any); setPage(1); }}
+            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500"
+          >
+            <option value="all">كل الفروع</option>
+            <option value="gallery">المعرض</option>
+            <option value="stationery">المكتبة</option>
+          </select>
+        </div>
       </div>
 
       {/* Table */}
@@ -228,6 +277,7 @@ export const InvoicesScreen: React.FC<InvoicesScreenProps> = ({
                 <th className="text-right px-3 py-3 font-bold">رقم</th>
                 <th className="text-right px-3 py-3 font-bold">التاريخ</th>
                 <th className="text-right px-3 py-3 font-bold">العميل</th>
+                <th className="text-right px-3 py-3 font-bold">الفرع</th>
                 <th className="text-right px-3 py-3 font-bold">البائع</th>
                 <th className="text-right px-3 py-3 font-bold">الدفع</th>
                 <th className="text-left px-3 py-3 font-bold">الإجمالي</th>
@@ -238,11 +288,11 @@ export const InvoicesScreen: React.FC<InvoicesScreenProps> = ({
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="text-center py-12 text-slate-400 text-sm">جاري التحميل...</td>
+                  <td colSpan={9} className="text-center py-12 text-slate-400 text-sm">جاري التحميل...</td>
                 </tr>
               ) : paged.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="text-center py-12 text-slate-400 text-sm">
+                  <td colSpan={9} className="text-center py-12 text-slate-400 text-sm">
                     {filtered.length === 0 && invoices.length === 0
                       ? 'لا توجد فواتير محفوظة بعد. ابدأ بإصدار فاتورة من تبويب "نقطة البيع السريع".'
                       : 'لا توجد فواتير تطابق الفلاتر الحالية.'}
@@ -259,6 +309,33 @@ export const InvoicesScreen: React.FC<InvoicesScreenProps> = ({
                     <td className="px-3 py-3 text-slate-700">
                       <div className="font-semibold">{inv.customerName || '—'}</div>
                       {inv.customerPhone && <div className="text-[10px] text-slate-400">{inv.customerPhone}</div>}
+                    </td>
+                    <td className="px-3 py-3">
+                      {(() => {
+                        const branch = getInvoiceBranch(inv);
+                        if (branch.kind === 'mixed') {
+                          return (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-indigo-50 border border-indigo-200 text-indigo-700 text-[10px] font-bold rounded-md">
+                              معرض + مكتبة
+                            </span>
+                          );
+                        }
+                        if (branch.kind === 'gallery') {
+                          return (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-bold rounded-md">
+                              معرض
+                            </span>
+                          );
+                        }
+                        if (branch.kind === 'stationery') {
+                          return (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-sky-50 border border-sky-200 text-sky-700 text-[10px] font-bold rounded-md">
+                              مكتبة
+                            </span>
+                          );
+                        }
+                        return <span className="text-slate-300 text-xs">—</span>;
+                      })()}
                     </td>
                     <td className="px-3 py-3 text-xs text-slate-600">
                       <div className="font-semibold">{inv.sellerName}</div>

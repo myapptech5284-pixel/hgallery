@@ -11,10 +11,6 @@ import {
   Trash2,
   X,
   BookOpen,
-  Receipt,
-  CreditCard,
-  Wallet,
-  AlertCircle,
   Clock,
   UserPlus,
 } from 'lucide-react';
@@ -174,29 +170,9 @@ export const CustomersScreen: React.FC<CustomersScreenProps> = ({ currentUser })
     });
   }, [customers, searchQuery, onlyWithDebt]);
 
-  // Portfolio-level totals across the whole directory.
-  const portfolio = useMemo(() => {
-    return customers.reduce(
-      (acc, c) => {
-        const s = c.summary || EMPTY_SUMMARY;
-        acc.invoiceCount += s.invoiceCount;
-        acc.netSales += s.netSales;
-        acc.totalRemaining += s.totalRemaining;
-        acc.installmentRemaining += s.installmentRemaining;
-        acc.openCount += s.openInstallmentCount;
-        acc.overdueCount += s.overdueInstallmentCount;
-        return acc;
-      },
-      {
-        invoiceCount: 0,
-        netSales: 0,
-        totalRemaining: 0,
-        installmentRemaining: 0,
-        openCount: 0,
-        overdueCount: 0,
-      }
-    );
-  }, [customers]);
+  // The portfolio KPI strip that used to sit above this list was removed at
+  // the owner's request — the directory is now contacts + per-row figures and
+  // the ledger modal, nothing else. Money totals live in التقارير instead.
 
   const ledgerCustomer = customers.find((c) => c.id === ledgerCustomerId) || null;
 
@@ -221,46 +197,6 @@ export const CustomersScreen: React.FC<CustomersScreenProps> = ({ currentUser })
           <UserPlus className="w-4 h-4" />
           <span>إضافة عميل جديد</span>
         </button>
-      </div>
-
-      {/* Portfolio summary */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs">
-          <div className="flex items-center gap-1.5 mb-1">
-            <Receipt className="w-3.5 h-3.5 text-slate-400" />
-            <span className="text-[11px] font-semibold text-slate-500">إجمالي فواتير العملاء</span>
-          </div>
-          <span className="text-base font-extrabold font-mono text-slate-900">{portfolio.invoiceCount}</span>
-        </div>
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs">
-          <div className="flex items-center gap-1.5 mb-1">
-            <Wallet className="w-3.5 h-3.5 text-emerald-500" />
-            <span className="text-[11px] font-semibold text-slate-500">صافي المبيعات</span>
-          </div>
-          <span className="text-base font-extrabold font-mono text-emerald-700">{money(portfolio.netSales)}</span>
-        </div>
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs">
-          <div className="flex items-center gap-1.5 mb-1">
-            <AlertCircle className="w-3.5 h-3.5 text-rose-500" />
-            <span className="text-[11px] font-semibold text-slate-500">مستحقات على العملاء</span>
-          </div>
-          <span className="text-base font-extrabold font-mono text-rose-600">{money(portfolio.totalRemaining)}</span>
-        </div>
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs">
-          <div className="flex items-center gap-1.5 mb-1">
-            <CreditCard className="w-3.5 h-3.5 text-amber-500" />
-            <span className="text-[11px] font-semibold text-slate-500">أقساط مفتوحة</span>
-          </div>
-          <span className="text-base font-extrabold font-mono text-amber-700">
-            {money(portfolio.installmentRemaining)}
-          </span>
-          <span className="text-[10px] text-slate-400 block mt-0.5">
-            {portfolio.openCount} قسط
-            {portfolio.overdueCount > 0 && (
-              <span className="text-rose-600 font-bold"> — {portfolio.overdueCount} متأخر</span>
-            )}
-          </span>
-        </div>
       </div>
 
       {/* Filters */}
