@@ -246,7 +246,8 @@ function initTables(database: Database): void {
       actualSalePrice REAL NOT NULL,
       frozenPurchaseCost REAL NOT NULL,
       itemProfit REAL NOT NULL,
-      total REAL NOT NULL
+      total REAL NOT NULL,
+      location TEXT
     );
 
     CREATE TABLE IF NOT EXISTS installments (
@@ -394,6 +395,23 @@ function initTables(database: Database): void {
   } catch (err) {
     // Column already exists, safe to ignore
   }
+
+  // A single invoice may now hold items from BOTH branches. Per-item location
+  // is the source of truth for stock, sales and profit attribution, so every
+  // historical line inherits its parent invoice's location and stays
+  // reportable per branch. Runs AFTER the CREATE TABLEs so it is safe on a
+  // brand-new database too.
+  try {
+    database.run('ALTER TABLE invoice_items ADD COLUMN location TEXT');
+  } catch (err) {
+    // Column already exists, safe to ignore
+  }
+  database.run(`
+    UPDATE invoice_items
+       SET location = (SELECT i.location FROM invoices i WHERE i.id = invoice_items.invoiceId)
+     WHERE location IS NULL
+       AND invoiceId IN (SELECT id FROM invoices WHERE location IS NOT NULL)
+  `);
 }
 
 export async function hasAdmin(): Promise<boolean> {

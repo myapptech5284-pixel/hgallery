@@ -95,6 +95,69 @@ function customerIdentityKeys(customer: any): string[] {
   return keys;
 }
 
+/** Placeholder the POS pre-fills for walk-in cash sales. */
+const WALK_IN_CUSTOMER_NAMES = new Set(['عميل نقدي', 'عميل نقدى', 'walk in', 'walk-in', 'cash']);
+
+function isWalkInCustomerName(name: any): boolean {
+  const value = String(name ?? '').trim().toLowerCase();
+  if (!value) return true;
+  return WALK_IN_CUSTOMER_NAMES.has(value);
+}
+
+/**
+ * Register a customer who just paid at the till, so the cashier never has to
+ * leave the sale screen to file them manually.
+ *
+ * Rules (from the business requirement):
+ *  - Installment sales: name + phone are mandatory, and the customer is filed.
+ *  - Cash/card sales: filed only when BOTH name and phone were typed. A blank
+ *    customer stays anonymous — nothing is created.
+ *  - Never duplicates: identity is the normalized phone number, so the same
+ *    person entered as "0101…" and "+20101…" is recognised as one customer.
+ *
+ * Returns the customer id when a row was created, otherwise null.
+ */
+function ensureCustomerForSale(name: any, phone: any, paymentMethod: any): string | null {
+  const cleanName = String(name ?? '').trim();
+  const cleanPhone = String(phone ?? '').trim();
+
+  // Installment requires identity; cash does not.
+  if (paymentMethod === 'installment') {
+    if (!cleanName || isWalkInCustomerName(cleanName) || !cleanPhone) return null;
+  } else {
+    if (!cleanPhone || !cleanName || isWalkInCustomerName(cleanName)) return null;
+  }
+
+  const phoneKey = normalizePhoneKey(cleanPhone);
+  if (!phoneKey) return null;
+
+  const existing = queryAll('SELECT id, phone FROM customers');
+  // Match on the normalized phone so different formatting of one number maps
+  // to a single customer row.
+  for (const row of existing) {
+    if (normalizePhoneKey(row.phone) === phoneKey) return null; // already known
+  }
+
+  // Also respect an exact-name match so a walk-in registered under the same
+  // name is not duplicated when they omit the phone on a later visit.
+  const sameName = queryAll('SELECT id FROM customers WHERE TRIM(name) = ?', [cleanName]);
+  if (sameName.length > 0) return null;
+
+  const id = 'cst_' + Date.now();
+  runSql(
+    'INSERT INTO customers (id, name, phone, address, notes, createdAt) VALUES (?, ?, ?, ?, ?, ?)',
+    [
+      id,
+      cleanName,
+      cleanPhone,
+      '',
+      paymentMethod === 'installment' ? 'مُسجَّل تلقائياً من البيع بالتقسيط' : 'مُسجَّل تلقائياً من البيع',
+      new Date().toISOString(),
+    ]
+  );
+  return id;
+}
+
 /**
  * Build the sales tables once and return the rows that belong to every
  * supplied customer, keyed by customer id. Loading the tables a single
@@ -291,7 +354,8 @@ function summarizeCustomer(
     totalRemaining,
     totalReturns,
     netSales: totalInvoiced - totalReturns,
-    totalProfit,
+    // Net profit is intentionally omitted from the customer ledger: profit is
+    // a management figure and does not belong on a customer's record.
     installmentTotal,
     installmentPaid,
     installmentRemaining,
@@ -315,14 +379,29 @@ function buildCustomerStatement(
     const total = Number(invoice.total) || 0;
     const paid = Number(invoice.paid) || 0;
     const isInstallment = Number(invoice.isInstallment) === 1 || invoice.paymentMethod === 'installment';
+    // Describe the branches the line items actually belong to, so a mixed
+    // invoice reads honestly in the customer's statement.
+    const locs: string[] = Array.from(
+      new Set<string>(
+        (invoice.items || [])
+          .map((it: any) => it.location || invoice.location)
+          .filter(Boolean)
+      )
+    );
+    const where =
+      locs.length === 0
+        ? LOCATION_LABEL[invoice.location] || ''
+        : locs.length > 1
+          ? `${locs.map((l) => LOCATION_LABEL[l] || l).join(' + ')}`
+          : LOCATION_LABEL[locs[0]] || locs[0];
     entries.push({
       id: `inv:${invoice.id}`,
       type: 'invoice',
       date: String(invoice.date || '').substring(0, 10),
       time: invoice.time || '',
       reference: invoice.invoiceNumber,
-      description: `فاتورة بيع ${isInstallment ? 'بالتقسيط' : 'نقدي/آجل'} — ${LOCATION_LABEL[invoice.location] || invoice.location}`,
-      location: invoice.location,
+      description: `فاتورة بيع ${isInstallment ? 'بالتقسيط' : 'نقدي/آجل'}${where ? ` — ${where}` : ''}`,
+      location: locs.length === 1 ? locs[0] : invoice.location,
       sellerName: invoice.sellerName,
       debit: total,
       // Cash/card sales are settled on the spot; installment sales get
@@ -1121,6 +1200,11 @@ async function startServer() {
       const cost = Number(prod.purchaseCost) || 0;
       const profitReversed = qty * (refund - cost);
 
+      // A return always belongs to the branch that owns the product. The
+      // caller may pass any location (or the header location of a mixed
+      // invoice), which would otherwise net the refund off the wrong branch.
+      const effectiveLocation = prod.location || location;
+
       // 1) Insert the return record
       runSql(
         `INSERT INTO sale_returns (id, productId, productName, sku, unit, quantity, unitRefundPrice, totalRefund, unitCostAtReturn, profitReversed, invoiceId, invoiceNumber, customerName, reason, location, date, createdById, createdByName, createdAt)
@@ -1139,7 +1223,7 @@ async function startServer() {
           null, null,
           customerName || null,
           reason || null,
-          location,
+          effectiveLocation,
           now,
           userId || 'admin',
           userName || 'المدير',
@@ -1595,10 +1679,19 @@ async function startServer() {
         }
       }
 
+      // Per-item location is the source of truth: one invoice may mix gallery
+      // and stationery items. Stock stays separate because every product row
+      // belongs to exactly one location, so nothing is merged.
+      const itemLocations: string[] = items.map((item: any) => {
+        const requested = String(item.location ?? '').trim();
+        return requested === 'gallery' || requested === 'stationery' ? requested : location;
+      });
+
       // Deduct inventory and calculate frozen profit
       let calculatedGrossProfit = 0;
 
-      for (const item of items) {
+      for (let idx = 0; idx < items.length; idx++) {
+        const item = items[idx];
         const prod = queryAll('SELECT * FROM products WHERE id = ?', [item.productId])[0];
         const newQty = Math.max(0, prod.quantity - item.quantity);
         runSql('UPDATE products SET quantity = ? WHERE id = ?', [newQty, prod.id]);
@@ -1611,8 +1704,8 @@ async function startServer() {
         calculatedGrossProfit += itemProfit;
 
         runSql(
-          `INSERT INTO invoice_items (id, invoiceId, productId, productName, sku, unit, quantity, unitSalePrice, discount, actualSalePrice, frozenPurchaseCost, itemProfit, total)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO invoice_items (id, invoiceId, productId, productName, sku, unit, quantity, unitSalePrice, discount, actualSalePrice, frozenPurchaseCost, itemProfit, total, location)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             itemId,
             invoiceId,
@@ -1627,11 +1720,34 @@ async function startServer() {
             frozenCost,
             itemProfit,
             actualPrice * item.quantity,
+            itemLocations[idx],
           ]
         );
       }
 
+      // File the customer automatically so the directory always matches what
+      // actually happened at the till (see ensureCustomerForSale).
+      const createdCustomerId = ensureCustomerForSale(customerName, customerPhone, paymentMethod);
+
       const status = paymentMethod === 'installment' && remaining > 0 ? 'partial' : 'completed';
+
+      // Invoice-level `location` is only a label for invoice listings (drafts,
+      // history, filters). All money attribution reads per-item location, so a
+      // mixed invoice is priced correctly in BOTH branches' reports. We keep
+      // the highest-value item's location as the primary label.
+      const itemTotals = items.map((item: any, i: number) => {
+        const actualPrice =
+          item.actualSalePrice !== undefined
+            ? item.actualSalePrice
+            : item.unitSalePrice - (item.discount || 0);
+        return actualPrice * item.quantity;
+      });
+      let primaryIdx = 0;
+      for (let i = 1; i < itemTotals.length; i++) {
+        if (itemTotals[i] > itemTotals[primaryIdx]) primaryIdx = i;
+      }
+      const primaryLocation = itemLocations[primaryIdx];
+      const isMixedInvoice = new Set(itemLocations).size > 1;
 
       runSql(
         `INSERT INTO invoices (id, invoiceNumber, customerName, customerPhone, location, sellerId, sellerName, sellerCode, date, time, subtotal, totalDiscount, total, paid, remaining, paymentMethod, isInstallment, installmentDueDate, installmentPercent, installmentSurcharge, finalTotal, status, notes, createdAt)
@@ -1641,7 +1757,7 @@ async function startServer() {
           invoiceNumber,
           customerName || 'عميل نقدي',
           customerPhone || '',
-          location,
+          primaryLocation,
           sellerId,
           sellerName,
           sellerCode,
@@ -1676,7 +1792,7 @@ async function startServer() {
             invoiceNumber,
             customerName,
             customerPhone,
-            location,
+            primaryLocation,
             sellerId,
             sellerName,
             sellerCode,
@@ -1706,6 +1822,15 @@ async function startServer() {
         invoiceId,
         invoiceNumber,
         grossProfit: calculatedGrossProfit,
+        // Per-branch split so the cashier can confirm the till at a glance.
+        locationBreakdown: itemLocations.reduce((acc: any, loc: string, i: number) => {
+          acc[loc] = (acc[loc] || 0) + itemTotals[i];
+          return acc;
+        }, {}),
+        isMixedInvoice,
+        primaryLocation,
+        // Set when this sale created a new customer record in the directory.
+        createdCustomerId,
       });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
@@ -2010,52 +2135,77 @@ async function startServer() {
     try {
       const today = new Date().toISOString().substring(0, 10);
       const { location, sellerId } = req.query;
+      const wantLocation = location === 'gallery' || location === 'stationery' ? location : null;
       let sql = 'SELECT * FROM invoices WHERE date = ?';
       const params: any[] = [today];
-      if (location === 'gallery' || location === 'stationery') {
-        sql += ' AND location = ?';
-        params.push(location);
-      }
       if (sellerId) {
         sql += ' AND sellerId = ?';
         params.push(sellerId);
       }
-      const invoices = queryAll(sql, params);
-      let total = 0, paid = 0, remaining = 0, totalProfit = 0;
-      for (const inv of invoices) {
-        total += inv.total || 0;
-        paid += inv.paid || 0;
-        remaining += inv.remaining || 0;
-        const items = queryAll('SELECT itemProfit FROM invoice_items WHERE invoiceId = ?', [inv.id]);
-        for (const it of items) totalProfit += it.itemProfit || 0;
+      // No branch filter here: a mixed invoice is split per item instead.
+      const allInvoices = queryAll(sql, params);
+
+      const itemsByInvoice = new Map<string, any[]>();
+      if (allInvoices.length > 0) {
+        const ids = allInvoices.map((i: any) => i.id);
+        const rows = queryAll(
+          `SELECT * FROM invoice_items WHERE invoiceId IN (${ids.map(() => '?').join(',')})`,
+          ids
+        );
+        for (const row of rows) {
+          const list = itemsByInvoice.get(row.invoiceId) || [];
+          list.push(row);
+          itemsByInvoice.set(row.invoiceId, list);
+        }
+      }
+
+      let total = 0, paid = 0, remaining = 0, totalProfit = 0, invoiceCount = 0;
+      for (const inv of allInvoices) {
+        const items = itemsByInvoice.get(inv.id) || [];
+        const scoped = wantLocation
+          ? items.filter((it: any) => (it.location || inv.location) === wantLocation)
+          : items;
+        if (scoped.length === 0) continue;
+        invoiceCount += 1;
+        let branchSales = 0;
+        for (const it of scoped) {
+          branchSales += Number(it.total) || 0;
+          totalProfit += Number(it.itemProfit) || 0;
+        }
+        total += branchSales;
+        const invoiceTotal = Number(inv.total) || 0;
+        const share =
+          invoiceTotal > 0 ? branchSales / invoiceTotal : scoped.length / Math.max(items.length, 1);
+        paid += (Number(inv.paid) || 0) * share;
+        remaining += (Number(inv.remaining) || 0) * share;
       }
       res.json({
         success: true,
         date: today,
-        invoiceCount: invoices.length,
+        invoiceCount,
         totalSales: total,
         totalPaid: paid,
         totalRemaining: remaining,
         totalProfit,
-        invoices,
+        invoices: allInvoices,
       });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
     }
   });
 
-  // 13. Reports (Strict Separation of Gallery vs Stationery)
+  // 13. Reports (Gallery vs Stationery split per invoice ITEM)
   app.get('/api/reports', (req: Request, res: Response) => {
     try {
       const { location, startDate, endDate, sellerId } = req.query;
-      // Note: By rule, Gallery and Stationery reports MUST NOT be mixed unless explicitly requested
+      const wantLocation = location === 'gallery' || location === 'stationery' ? location : null;
+
+      // One invoice can hold items from both branches, so the branch filter is
+      // applied to invoice ITEMS, never to the invoice header. Fetching by
+      // date/seller only means a mixed invoice is counted in both reports,
+      // each time only for its own items.
       let invSql = 'SELECT * FROM invoices WHERE 1=1';
       const invParams: any[] = [];
-
-      if (location && (location === 'gallery' || location === 'stationery')) {
-        invSql += ' AND location = ?';
-        invParams.push(location);
-      }
       if (sellerId) {
         invSql += ' AND sellerId = ?';
         invParams.push(sellerId);
@@ -2069,7 +2219,22 @@ async function startServer() {
         invParams.push(endDate);
       }
 
-      const invoices = queryAll(invSql, invParams);
+      const allInvoices = queryAll(invSql, invParams);
+
+      // Load every line item of those invoices in one pass (no N+1 queries).
+      const itemsByInvoice = new Map<string, any[]>();
+      if (allInvoices.length > 0) {
+        const ids = allInvoices.map((i: any) => i.id);
+        const rows = queryAll(
+          `SELECT * FROM invoice_items WHERE invoiceId IN (${ids.map(() => '?').join(',')})`,
+          ids
+        );
+        for (const row of rows) {
+          const list = itemsByInvoice.get(row.invoiceId) || [];
+          list.push(row);
+          itemsByInvoice.set(row.invoiceId, list);
+        }
+      }
 
       let totalSales = 0;
       let totalDiscounts = 0;
@@ -2077,23 +2242,55 @@ async function startServer() {
       let totalRemaining = 0;
       let totalGrossProfit = 0;
       let totalCOGS = 0;
-      let totalReturned = 0; // Customer returns — reduce net sales + profit by these amounts.
+      let matchedInvoices = 0;
 
-      for (const inv of invoices) {
-        totalSales += inv.total;
-        totalDiscounts += inv.totalDiscount;
-        totalPaid += inv.paid;
-        totalRemaining += inv.remaining;
+      for (const inv of allInvoices) {
+        const items = itemsByInvoice.get(inv.id) || [];
+        const itemsForBranch = wantLocation
+          ? items.filter((it: any) => (it.location || inv.location) === wantLocation)
+          : items;
 
-        const returned = Number(inv.returnedAmount) || 0;
-        totalReturned += returned;
+        // An invoice with no matching items does not belong in this report.
+        if (itemsForBranch.length === 0) continue;
+        matchedInvoices += 1;
 
-        const items = queryAll('SELECT * FROM invoice_items WHERE invoiceId = ?', [inv.id]);
-        for (const it of items) {
-          totalGrossProfit += it.itemProfit;
-          totalCOGS += it.frozenPurchaseCost * it.quantity;
+        let branchSales = 0;
+        for (const it of itemsForBranch) {
+          branchSales += Number(it.total) || 0;
+          totalGrossProfit += Number(it.itemProfit) || 0;
+          totalCOGS += (Number(it.frozenPurchaseCost) || 0) * (Number(it.quantity) || 0);
+          totalDiscounts += (Number(it.discount) || 0) * (Number(it.quantity) || 0);
         }
+        totalSales += branchSales;
+
+        // Cash collected / still owed belongs to the invoice, so it is split
+        // across branches in proportion to each branch's share of the sale.
+        const invoiceTotal = Number(inv.total) || 0;
+        const share = invoiceTotal > 0 ? branchSales / invoiceTotal : (itemsForBranch.length / Math.max(items.length, 1));
+        totalPaid += (Number(inv.paid) || 0) * share;
+        totalRemaining += (Number(inv.remaining) || 0) * share;
       }
+
+      // Returns carry their own location (taken from the returned line item),
+      // so they net off the correct branch.
+      let retSql = 'SELECT * FROM sale_returns WHERE 1=1';
+      const retParams: any[] = [];
+      if (wantLocation) {
+        retSql += ' AND location = ?';
+        retParams.push(wantLocation);
+      }
+      if (startDate) {
+        retSql += ' AND date >= ?';
+        retParams.push(startDate);
+      }
+      if (endDate) {
+        retSql += ' AND date <= ?';
+        retParams.push(endDate);
+      }
+      const totalReturned = queryAll(retSql, retParams).reduce(
+        (acc: number, r: any) => acc + (Number(r.totalRefund) || 0),
+        0
+      );
 
       // Net realized sales = totalSales minus customer returns (so the
       // books stay accurate when customers bring items back).
@@ -2146,26 +2343,50 @@ async function startServer() {
       // Net profit = Gross profit from sales - Operational expenses - Salaries - Scrap
       const netProfit = totalGrossProfit - operationalExpenses - salariesExpenses - scrapExpenses;
 
-      // Installments summary
+      // Installments summary — an installment inherits the split of the invoice it
+      // was created from, so its profit is summed from matching line items.
       let instSql = 'SELECT * FROM installments WHERE 1=1';
       const instParams: any[] = [];
-      if (location && (location === 'gallery' || location === 'stationery')) {
-        instSql += ' AND location = ?';
-        instParams.push(location);
+      if (startDate) {
+        instSql += ' AND date >= ?';
+        instParams.push(startDate);
       }
-      const installments = queryAll(instSql, instParams);
-      const totalInstallmentSales = installments.reduce((acc, i) => acc + i.totalAmount, 0);
-      const totalInstallmentCollected = installments.reduce((acc, i) => acc + i.paidAmount, 0);
-      const totalInstallmentProfit = installments.reduce((acc, i) => {
-        const items = queryAll('SELECT itemProfit FROM invoice_items WHERE invoiceId = ?', [i.invoiceId]);
-        return acc + items.reduce((s, it: any) => s + (it.itemProfit || 0), 0);
+      if (endDate) {
+        instSql += ' AND date <= ?';
+        instParams.push(endDate);
+      }
+      if (sellerId) {
+        instSql += ' AND sellerId = ?';
+        instParams.push(sellerId);
+      }
+      const allInstallments = queryAll(instSql, instParams);
+      const installments = wantLocation
+        ? allInstallments.filter((i: any) => {
+            const items = itemsByInvoice.get(i.invoiceId) || [];
+            return items.some((it: any) => (it.location || 'gallery') === wantLocation);
+          })
+        : allInstallments;
+      const totalInstallmentSales = installments.reduce((acc, i: any) => acc + (Number(i.totalAmount) || 0), 0);
+      const totalInstallmentCollected = installments.reduce((acc, i: any) => acc + (Number(i.paidAmount) || 0), 0);
+      const totalInstallmentProfit = installments.reduce((acc: number, i: any) => {
+        const items = itemsByInvoice.get(i.invoiceId) || [];
+        const scoped = wantLocation
+          ? items.filter((it: any) => (it.location || 'gallery') === wantLocation)
+          : items;
+        return acc + scoped.reduce((s: number, it: any) => s + (Number(it.itemProfit) || 0), 0);
       }, 0);
       const totalInstallmentRemaining = installments.reduce((acc, i) => acc + i.remainingAmount, 0);
       const overdueInstallmentsCount = installments.filter(i => i.status === 'active' && i.dueDate < new Date().toISOString().split('T')[0]).length;
 
       // Employee performance breakdown (strictly shows true seller names, never replacing with admin)
       const sellerStatsMap: { [key: string]: { sellerId: string; sellerName: string; sellerCode: string; invoiceCount: number; totalSales: number; totalProfit: number; totalDiscount: number } } = {};
-      for (const inv of invoices) {
+      for (const inv of allInvoices) {
+        const items = itemsByInvoice.get(inv.id) || [];
+        const scoped = wantLocation
+          ? items.filter((it: any) => (it.location || inv.location) === wantLocation)
+          : items;
+        if (scoped.length === 0) continue;
+
         if (!sellerStatsMap[inv.sellerId]) {
           sellerStatsMap[inv.sellerId] = {
             sellerId: inv.sellerId,
@@ -2178,20 +2399,20 @@ async function startServer() {
           };
         }
         sellerStatsMap[inv.sellerId].invoiceCount += 1;
-        sellerStatsMap[inv.sellerId].totalSales += inv.total;
-        sellerStatsMap[inv.sellerId].totalDiscount += inv.totalDiscount;
-
-        const items = queryAll('SELECT itemProfit FROM invoice_items WHERE invoiceId = ?', [inv.id]);
-        for (const it of items) {
-          sellerStatsMap[inv.sellerId].totalProfit += it.itemProfit;
+        for (const it of scoped) {
+          sellerStatsMap[inv.sellerId].totalSales += Number(it.total) || 0;
+          sellerStatsMap[inv.sellerId].totalProfit += Number(it.itemProfit) || 0;
+          sellerStatsMap[inv.sellerId].totalDiscount +=
+            (Number(it.discount) || 0) * (Number(it.quantity) || 0);
         }
       }
 
       // Product performance breakdown
       const productStatsMap: { [key: string]: { productId: string; productName: string; sku: string; quantitySold: number; totalSales: number; totalProfit: number } } = {};
-      for (const inv of invoices) {
-        const items = queryAll('SELECT * FROM invoice_items WHERE invoiceId = ?', [inv.id]);
+      for (const inv of allInvoices) {
+        const items = itemsByInvoice.get(inv.id) || [];
         for (const it of items) {
+          if (wantLocation && (it.location || inv.location) !== wantLocation) continue;
           if (!productStatsMap[it.productId]) {
             productStatsMap[it.productId] = {
               productId: it.productId,
@@ -2227,7 +2448,7 @@ async function startServer() {
           totalExpenses: operationalExpenses + salariesExpenses + scrapExpenses,
           netProfit,
           inventoryValuation,
-          invoiceCount: invoices.length,
+          invoiceCount: matchedInvoices,
         },
         sellerPerformance: Object.values(sellerStatsMap),
         productPerformance: Object.values(productStatsMap).sort((a, b) => b.totalSales - a.totalSales),
@@ -2245,7 +2466,13 @@ async function startServer() {
           totalRemaining: totalInstallmentRemaining,
           dueCount: overdueInstallmentsCount,
         },
-        invoices,
+        invoices: allInvoices.filter((inv: any) => {
+          if (matchedInvoices === 0) return false;
+          const items = itemsByInvoice.get(inv.id) || [];
+          return wantLocation
+            ? items.some((it: any) => (it.location || inv.location) === wantLocation)
+            : true;
+        }),
         expenses,
       });
     } catch (err: any) {

@@ -82,7 +82,6 @@ export interface CustomerSummary {
   totalRemaining: number;
   totalReturns: number;
   netSales: number; // totalInvoiced - totalReturns
-  totalProfit: number;
   installmentTotal: number;
   installmentPaid: number;
   installmentRemaining: number;
@@ -176,6 +175,12 @@ export interface InvoiceItem {
   frozenPurchaseCost: number; // Snapshot of cost at invoice creation
   itemProfit: number; // (actualSalePrice - frozenPurchaseCost) * quantity
   total: number; // actualSalePrice * quantity
+  /**
+   * Which branch this line belongs to. A single invoice may mix gallery and
+   * stationery items; stock, sales and profit are attributed per line so the
+   * two branches stay fully separate.
+   */
+  location?: LocationType;
 }
 
 export interface Invoice {
