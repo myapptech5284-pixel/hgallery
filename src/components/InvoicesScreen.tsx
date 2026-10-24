@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Invoice, User, InvoiceItem } from '../types.ts';
+import { Invoice, User, InvoiceItem, LocationType, LOCATION_TYPES, LOCATION_SHORT_LABEL, LOCATION_BADGE, isLocationType } from '../types.ts';
 import { api } from '../services/api.ts';
 import { ThermalReceipt } from './ThermalReceipt.tsx';
 import {
@@ -30,7 +30,7 @@ type InvoiceWithItems = Invoice;
  * is the source of truth — and falls back to the header `location` for old
  * rows that predate per-item locations.
  */
-type BranchBadge = { kind: 'gallery' | 'stationery' | 'mixed'; label: string };
+type BranchBadge = { kind: LocationType | 'mixed'; label: string };
 
 function getInvoiceBranch(invoice: InvoiceWithItems): BranchBadge {
   const itemLocations = new Set<string>();
@@ -40,14 +40,17 @@ function getInvoiceBranch(invoice: InvoiceWithItems): BranchBadge {
   }
   if (itemLocations.size === 0) {
     const loc = invoice.location;
-    if (loc === 'gallery') return { kind: 'gallery', label: 'معرض' };
-    if (loc === 'stationery') return { kind: 'stationery', label: 'مكتبة' };
+    if (isLocationType(loc)) return { kind: loc, label: LOCATION_SHORT_LABEL[loc] };
     return { kind: 'mixed', label: '—' };
   }
-  if (itemLocations.size > 1) return { kind: 'mixed', label: 'معرض + مكتبة' };
+  if (itemLocations.size > 1) {
+    const names = Array.from(itemLocations)
+      .filter((l) => isLocationType(l))
+      .map((l) => LOCATION_SHORT_LABEL[l as LocationType]);
+    return { kind: 'mixed', label: names.length ? names.join(' + ') : '—' };
+  }
   const only = itemLocations.values().next().value;
-  if (only === 'gallery') return { kind: 'gallery', label: 'معرض' };
-  if (only === 'stationery') return { kind: 'stationery', label: 'مكتبة' };
+  if (isLocationType(only)) return { kind: only, label: LOCATION_SHORT_LABEL[only] };
   return { kind: 'mixed', label: '—' };
 }
 
@@ -60,7 +63,7 @@ export const InvoicesScreen: React.FC<InvoicesScreenProps> = ({ currentUser }) =
   const [filterType, setFilterType] = useState<'all' | 'cash' | 'installment'>('all');
   // Optional branch narrowing on top of the unified list. 'all' (default)
   // means "show everything" — the unified behaviour the screen is built for.
-  const [filterBranch, setFilterBranch] = useState<'all' | 'gallery' | 'stationery'>('all');
+  const [filterBranch, setFilterBranch] = useState<'all' | LocationType>('all');
   const [selectedInvoice, setSelectedInvoice] = useState<InvoiceWithItems | null>(null);
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 15;
@@ -182,7 +185,7 @@ export const InvoicesScreen: React.FC<InvoicesScreenProps> = ({ currentUser }) =
             الفواتير المحفوظة
           </h1>
           <p className="text-xs text-slate-500 mt-1">
-            كل الفواتير المحفوظة — المعرض والمكتبة في صفحة واحدة
+            كل الفواتير المحفوظة — المعرض والمكتبة والأدوات الكهربائية في صفحة واحدة
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -264,6 +267,7 @@ export const InvoicesScreen: React.FC<InvoicesScreenProps> = ({ currentUser }) =
             <option value="all">كل الفروع</option>
             <option value="gallery">المعرض</option>
             <option value="stationery">المكتبة</option>
+            <option value="tools">الأدوات الكهربائية</option>
           </select>
         </div>
       </div>
@@ -316,7 +320,7 @@ export const InvoicesScreen: React.FC<InvoicesScreenProps> = ({ currentUser }) =
                         if (branch.kind === 'mixed') {
                           return (
                             <span className="inline-flex items-center gap-1 px-2 py-1 bg-indigo-50 border border-indigo-200 text-indigo-700 text-[10px] font-bold rounded-md">
-                              معرض + مكتبة
+                              {branch.label}
                             </span>
                           );
                         }
@@ -334,6 +338,11 @@ export const InvoicesScreen: React.FC<InvoicesScreenProps> = ({ currentUser }) =
                             </span>
                           );
                         }
+                        return (
+                          <span className="inline-flex items-center gap-1 px-2 py-1 bg-amber-50 border border-amber-200 text-amber-700 text-[10px] font-bold rounded-md">
+                            أدوات كهربائية
+                          </span>
+                        );
                         return <span className="text-slate-300 text-xs">—</span>;
                       })()}
                     </td>

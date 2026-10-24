@@ -85,7 +85,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ isInitialized, onLoginSu
           </div>
           <h1 className="text-2xl font-bold text-slate-800 tracking-tight">نظام إدارة معرض حور</h1>
           <p className="text-xs text-slate-500 mt-1">
-            إدارة المعرض والمكتبة والمخزون ونقاط البيع المستقلة
+            إدارة المعرض والمكتبة والأدوات الكهربائية والمخزون ونقاط البيع المستقلة
           </p>
         </div>
 
@@ -221,7 +221,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ isInitialized, onLoginSu
 
         <div className="mt-8 pt-4 border-t border-slate-100 flex items-center justify-between text-xs text-slate-400">
           <span>نظام محلي متكامل (Offline SQLite)</span>
-          <span>الإصدار 6.0.3 (Windows EXE)</span>
+          <span>الإصدار 7.0.2 (Windows EXE)</span>
         </div>
       </div>
     </div>

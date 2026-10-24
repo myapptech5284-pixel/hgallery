@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { User, LocationType } from './types.ts';
 import { api } from './services/api.ts';
 import { AuthScreen } from './components/AuthScreen.tsx';
@@ -428,11 +428,30 @@ export default function App() {
   const [isInitialized, setIsInitialized] = useState<boolean>(true);
   const [checkingInit, setCheckingInit] = useState<boolean>(true);
 
-  // Active operational location (gallery vs stationery)
+  // Active operational location (gallery / stationery / electrical tools)
   const [activeLocation, setActiveLocation] = useState<LocationType>('gallery');
 
   // Navigation tab (defaults to pos - "أزل صفحة نظرة عامة واجعل التنقل يبدأ بالصفحات التشغيلية الأساسية")
   const [activeTab, setActiveTab] = useState<string>('pos');
+
+  // The POS registers a callback here so the cart can be suspended as a draft
+  // before the tab is left. Leaving POS used to discard whatever was in the
+  // cart with no trace — the cashier returned to an empty sale.
+  const posLeaveHandlerRef = useRef<(() => Promise<void>) | null>(null);
+  const registerPosLeaveHandler = useCallback((handler: (() => Promise<void>) | null) => {
+    posLeaveHandlerRef.current = handler;
+  }, []);
+
+  const handleTabChange = async (tab: string) => {
+    if (activeTab === 'pos' && tab !== 'pos' && posLeaveHandlerRef.current) {
+      try {
+        await posLeaveHandlerRef.current();
+      } catch (err) {
+        console.warn('[hawr] failed to suspend cart before leaving POS:', err);
+      }
+    }
+    setActiveTab(tab);
+  };
 
   const checkInitialization = async () => {
     setCheckingInit(true);
@@ -512,7 +531,7 @@ export default function App() {
         activeLocation={activeLocation}
         onLocationChange={setActiveLocation}
         activeTab={activeTab}
-        onTabChange={setActiveTab}
+        onTabChange={handleTabChange}
         onLogout={handleLogout}
       />
 
@@ -522,6 +541,7 @@ export default function App() {
           <PosScreen
             currentUser={currentUser}
             activeLocation={activeLocation}
+            onRegisterLeaveHandler={registerPosLeaveHandler}
           />
         )}
 

@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Expense, LocationType, User, Employee } from '../types.ts';
+import { Expense, LocationType, User, Employee , LOCATION_LABEL } from '../types.ts';
+import { LOCATION_BADGE } from '../types.ts';
+import { LocationTabs } from './LocationTabs.tsx';
 import { api } from '../services/api.ts';
 import {
   DollarSign,
@@ -167,30 +169,11 @@ export const ExpensesScreen: React.FC<ExpensesScreenProps> = ({
         </div>
 
         <div className="flex items-center gap-3">
-          <div className="flex items-center bg-slate-200/80 p-1 rounded-xl">
-            <button
-              onClick={() => onLocationChange('gallery')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                activeLocation === 'gallery'
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <Store className="w-3.5 h-3.5" />
-              <span>مصروفات المعرض</span>
-            </button>
-            <button
-              onClick={() => onLocationChange('stationery')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                activeLocation === 'stationery'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <BookOpen className="w-3.5 h-3.5" />
-              <span>مصروفات المكتبة</span>
-            </button>
-          </div>
+          <LocationTabs
+            activeLocation={activeLocation}
+            onLocationChange={onLocationChange}
+            label={(loc) => `مصروفات ${LOCATION_LABEL[loc]}`}
+          />
 
           <button
             onClick={openModal}
@@ -234,7 +217,7 @@ export const ExpensesScreen: React.FC<ExpensesScreenProps> = ({
             {totalAll.toFixed(2)} ج.م
           </span>
           <span className="text-[10px] text-slate-400 block mt-1">
-            في {activeLocation === 'gallery' ? 'المعرض' : 'المكتبة'}
+            في {LOCATION_LABEL[activeLocation]}
           </span>
         </div>
       </div>
@@ -349,12 +332,10 @@ export const ExpensesScreen: React.FC<ExpensesScreenProps> = ({
                       <td className="p-3.5">
                         <span
                           className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                            exp.location === 'gallery'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-indigo-100 text-indigo-800'
+                            LOCATION_BADGE[exp.location] || 'bg-slate-100 text-slate-700'
                           }`}
                         >
-                          {exp.location === 'gallery' ? 'المعرض' : 'المكتبة'}
+                          {LOCATION_LABEL[exp.location] || exp.location}
                         </span>
                       </td>
                       <td className="p-3.5 text-slate-600">

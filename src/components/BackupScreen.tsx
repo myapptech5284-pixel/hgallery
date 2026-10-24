@@ -263,16 +263,19 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ currentUser, onSyste
         </p>
       </div>
 
-      {/* 🗄 Auto-backup section — every 20 minutes */}
+      {/* 🗄 Auto-backup section — every 60 seconds */}
       <div className="mb-6 bg-gradient-to-l from-amber-50 to-orange-50 border-2 border-amber-300 rounded-2xl p-5">
         <div className="flex items-center gap-2 mb-3">
           <Calendar className="w-5 h-5 text-amber-700" />
-          <h2 className="text-base font-bold text-amber-900">النسخ الاحتياطي التلقائي كل 20 دقيقة</h2>
+          <h2 className="text-base font-bold text-amber-900">النسخ الاحتياطي التلقائي كل دقيقة</h2>
           <span className="text-[10px] bg-amber-600 text-white px-2 py-0.5 rounded font-bold">يعمل تلقائياً</span>
         </div>
         <p className="text-[11px] text-amber-800 mb-4">
-          يتحقق البرنامج تلقائياً كل 20 دقيقة: لو مرّت 20 دقيقة على آخر نسخة، ينسخ قاعدة البيانات وكل الإعدادات تلقائياً.
-          <b> كل نسخة جديدة تستبدل القديمة</b> (لا تتراكم ملفات) — حافظ على آخر بيانات دائماً.
+          ينسخ البرنامج قاعدة البيانات تلقائياً <b>كل 60 ثانية</b> إلى مجلد مستقل باسم وقت النسخ.
+          النسخة القديمة <b>لا تُحذف إلا بعد مرور 20 دقيقة</b> عليها، فتحتفظ دائماً بآخر 20 نسخة
+          متتابعة (نسخة كل دقيقة) لتسترجع أي لحظة خلال آخر 20 دقيقة.
+          <br />
+          أما النسخ التي تأخذها يدوياً من زر «احفظ الآن» فلا تُحذف أبداً.
         </p>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">

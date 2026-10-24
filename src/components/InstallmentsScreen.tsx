@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { InstallmentRecord, LocationType, User } from '../types.ts';
+import { InstallmentRecord, LocationType, User , LOCATION_LABEL } from '../types.ts';
+import { LocationTabs } from './LocationTabs.tsx';
 import { api } from '../services/api.ts';
 import { InstallmentPaymentModal } from './InstallmentPaymentModal.tsx';
 import {
@@ -87,30 +88,11 @@ export const InstallmentsScreen: React.FC<InstallmentsScreenProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center bg-slate-200/80 p-1 rounded-xl">
-          <button
-            onClick={() => onLocationChange('gallery')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-              activeLocation === 'gallery'
-                ? 'bg-emerald-600 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Store className="w-3.5 h-3.5" />
-            <span>أقساط المعرض</span>
-          </button>
-          <button
-            onClick={() => onLocationChange('stationery')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-              activeLocation === 'stationery'
-                ? 'bg-indigo-600 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <BookOpen className="w-3.5 h-3.5" />
-            <span>أقساط المكتبة</span>
-          </button>
-        </div>
+        <LocationTabs
+          activeLocation={activeLocation}
+          onLocationChange={onLocationChange}
+          label={(loc) => `أقساط ${LOCATION_LABEL[loc]}`}
+        />
       </div>
 
       {/* Metrics Cards */}
@@ -121,7 +103,7 @@ export const InstallmentsScreen: React.FC<InstallmentsScreenProps> = ({
             {totalInstallmentSales.toFixed(2)} ج.م
           </span>
           <span className="text-[11px] text-slate-400 block mt-1">
-            إجمالي الفواتير الآجلة في {activeLocation === 'gallery' ? 'المعرض' : 'المكتبة'}
+            إجمالي الفواتير الآجلة في {LOCATION_LABEL[activeLocation]}
           </span>
         </div>
 

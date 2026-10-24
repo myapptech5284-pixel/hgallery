@@ -2,8 +2,9 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
 import * as XLSX from 'xlsx';
-import { getDb, saveDb, hasAdmin, logAudit, createBackup, verifyAndRestoreBackup, resetDatabase } from './src/server/db.ts';
+import { getDb, saveDb, hasAdmin, logAudit, createBackup, verifyAndRestoreBackup, resetDatabase, ensureInvoiceItemsLocation } from './src/server/db.ts';
 import { hashPassword, verifyPassword } from './src/server/auth.ts';
+import { isLocationType, LOCATION_TYPES, LOCATION_LABEL as LOCATION_LABEL_AR, type LocationType } from './src/types.ts';
 
 const app = express();
 const PORT = 3000;
@@ -773,7 +774,7 @@ async function startServer() {
       let sql = 'SELECT * FROM products WHERE 1=1';
       const params: any[] = [];
 
-      if (location && (location === 'gallery' || location === 'stationery')) {
+      if (location && (isLocationType(location))) {
         sql += ' AND location = ?';
         params.push(location);
       }
@@ -803,14 +804,18 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'الحقول الأساسية للمنتج مطلوبة' });
       }
 
-      if (location !== 'gallery' && location !== 'stationery') {
-        return res.status(400).json({ success: false, error: 'يجب أن يكون موقع التخزين إما المعرض أو المكتبة' });
+      if (!isLocationType(location)) {
+        return res.status(400).json({
+          success: false,
+          error: `يجب أن يكون موقع التخزين أحد الفروع: ${LOCATION_TYPES.map((l) => LOCATION_LABEL_AR[l]).join(' أو ')}`,
+        });
       }
 
-      // Rule: Product cannot exist in both locations! It belongs to either gallery or stationery
+      // Rule: a product belongs to exactly ONE branch. Its stock, supply and
+      // reports are therefore completely separate from the other branches.
       const existing = queryAll('SELECT * FROM products WHERE sku = ?', [sku.trim()]);
       if (existing.length > 0) {
-        const otherLoc = existing[0].location === 'gallery' ? 'المعرض' : 'المكتبة';
+        const otherLoc = LOCATION_LABEL_AR[existing[0].location as LocationType] || existing[0].location;
         return res.status(400).json({
           success: false,
           error: `المنتج موجود بالفعل في (${otherLoc}) بكود ${sku}. لا يمكن لمنتج أن يتواجد في المعرض والمكتبة معاً. يمكنك نقله بدلاً من ذلك.`,
@@ -949,9 +954,9 @@ async function startServer() {
         ]
       );
 
-      logAudit('stock_transfer', userId || 'admin', userName || 'المدير', `نقل منتج ${prod.name} من ${fromLocation === 'gallery' ? 'المعرض' : 'المكتبة'} إلى ${toLocation === 'gallery' ? 'المعرض' : 'المكتبة'}`);
+      logAudit('stock_transfer', userId || 'admin', userName || 'المدير', `نقل منتج ${prod.name} من ${LOCATION_LABEL_AR[fromLocation as LocationType] || fromLocation} إلى ${LOCATION_LABEL_AR[toLocation as LocationType] || toLocation}`);
 
-      res.json({ success: true, message: `تم نقل المنتج بنجاح إلى ${toLocation === 'gallery' ? 'المعرض' : 'المكتبة'}` });
+      res.json({ success: true, message: `تم نقل المنتج بنجاح إلى ${LOCATION_LABEL_AR[toLocation as LocationType] || toLocation}` });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
     }
@@ -1015,14 +1020,31 @@ async function startServer() {
 
         const cleanSku = sku ? String(sku).trim() : 'AUTO-' + Date.now() + '-' + index;
 
-        // Determine location
-        let location: 'gallery' | 'stationery' = defaultLocation || 'gallery';
+        // Determine location — any of the three branches
+        let location: LocationType = isLocationType(defaultLocation) ? defaultLocation : 'gallery';
         if (rawLoc) {
           const l = String(rawLoc).trim().toLowerCase();
-          if (l.includes('مكتب') || l.includes('stationery') || l.includes('library')) {
+          if (
+            l.includes('مكتب') ||
+            l.includes('stationery') ||
+            l.includes('library') ||
+            l.includes('قرطاس')
+          ) {
             location = 'stationery';
-          } else if (l.includes('معرض') || l.includes('gallery')) {
+          } else if (
+            l.includes('معرض') ||
+            l.includes('gallery') ||
+            l.includes('منزلي')
+          ) {
             location = 'gallery';
+          } else if (
+            l.includes('كهرب') ||
+            l.includes('tool') ||
+            l.includes('electric') ||
+            l.includes('أداة') ||
+            l.includes('معدات')
+          ) {
+            location = 'tools';
           }
         }
 
@@ -1031,7 +1053,7 @@ async function startServer() {
         if (existing.length > 0) {
           errors.push({
             rowNumber,
-            reason: `الكود مكرر (${cleanSku}) وموجود مسبقاً في ${existing[0].location === 'gallery' ? 'المعرض' : 'المكتبة'}`,
+            reason: `الكود مكرر (${cleanSku}) وموجود مسبقاً في ${LOCATION_LABEL_AR[existing[0].location as LocationType] || existing[0].location}`,
             data: rawRow,
           });
           return;
@@ -1063,7 +1085,7 @@ async function startServer() {
       const { location } = req.query;
       let sql = 'SELECT * FROM supplies WHERE 1=1';
       const params: any[] = [];
-      if (location && (location === 'gallery' || location === 'stationery')) {
+      if (location && (isLocationType(location))) {
         sql += ' AND location = ?';
         params.push(location);
       }
@@ -1098,7 +1120,7 @@ async function startServer() {
         const prod = existing[0];
         // Enforce rule: product cannot exist in both locations
         if (prod.location !== location) {
-          const locName = prod.location === 'gallery' ? 'المعرض' : 'المكتبة';
+          const locName = LOCATION_LABEL_AR[prod.location as LocationType] || prod.location;
           return res.status(400).json({
             success: false,
             error: `هذا المنتج مسجل حالياً في (${locName}). لا يمكن توريده في موقع آخر إلا بعد نقله.`,
@@ -1587,7 +1609,7 @@ async function startServer() {
       let sql = 'SELECT * FROM invoices WHERE 1=1';
       const params: any[] = [];
 
-      if (location && (location === 'gallery' || location === 'stationery')) {
+      if (location && (isLocationType(location))) {
         sql += ' AND location = ?';
         params.push(location);
       }
@@ -1683,9 +1705,15 @@ async function startServer() {
       // Per-item location is the source of truth: one invoice may mix gallery
       // and stationery items. Stock stays separate because every product row
       // belongs to exactly one location, so nothing is merged.
+      //
+      // Self-heal first: a database swapped in by a restored backup can be
+      // missing this column, and without this the whole insert below dies with
+      // "table invoice_items has no column named location" and no invoice can
+      // be saved at all.
+      ensureInvoiceItemsLocation();
       const itemLocations: string[] = items.map((item: any) => {
         const requested = String(item.location ?? '').trim();
-        return requested === 'gallery' || requested === 'stationery' ? requested : location;
+        return isLocationType(requested) ? requested : location;
       });
 
       // Deduct inventory and calculate frozen profit
@@ -1894,7 +1922,7 @@ async function startServer() {
       const { location, sellerId } = req.query;
       let sql = 'SELECT * FROM invoice_drafts WHERE 1=1';
       const params: any[] = [];
-      if (location === 'gallery' || location === 'stationery') {
+      if (isLocationType(location)) {
         sql += ' AND location = ?';
         params.push(location);
       }
@@ -1941,7 +1969,7 @@ async function startServer() {
       let sql = 'SELECT * FROM installments WHERE 1=1';
       const params: any[] = [];
 
-      if (location && (location === 'gallery' || location === 'stationery')) {
+      if (location && (isLocationType(location))) {
         sql += ' AND location = ?';
         params.push(location);
       }
@@ -2043,7 +2071,7 @@ async function startServer() {
       let sql = 'SELECT * FROM expenses WHERE 1=1';
       const params: any[] = [];
 
-      if (location && (location === 'gallery' || location === 'stationery')) {
+      if (location && (isLocationType(location))) {
         sql += ' AND location = ?';
         params.push(location);
       }
@@ -2136,7 +2164,7 @@ async function startServer() {
     try {
       const today = new Date().toISOString().substring(0, 10);
       const { location, sellerId } = req.query;
-      const wantLocation = location === 'gallery' || location === 'stationery' ? location : null;
+      const wantLocation = isLocationType(location) ? location : null;
       let sql = 'SELECT * FROM invoices WHERE date = ?';
       const params: any[] = [today];
       if (sellerId) {
@@ -2199,7 +2227,7 @@ async function startServer() {
   app.get('/api/reports', (req: Request, res: Response) => {
     try {
       const { location, startDate, endDate, sellerId } = req.query;
-      const wantLocation = location === 'gallery' || location === 'stationery' ? location : null;
+      const wantLocation = isLocationType(location) ? location : null;
 
       // One invoice can hold items from both branches, so the branch filter is
       // applied to invoice ITEMS, never to the invoice header. Fetching by
@@ -2304,7 +2332,7 @@ async function startServer() {
       // Expenses query
       let expSql = 'SELECT * FROM expenses WHERE 1=1';
       const expParams: any[] = [];
-      if (location && (location === 'gallery' || location === 'stationery')) {
+      if (location && (isLocationType(location))) {
         expSql += ' AND location = ?';
         expParams.push(location);
       }
@@ -2331,7 +2359,7 @@ async function startServer() {
       // Inventory valuation at cost
       let prodSql = 'SELECT * FROM products WHERE 1=1';
       const prodParams: any[] = [];
-      if (location && (location === 'gallery' || location === 'stationery')) {
+      if (location && (isLocationType(location))) {
         prodSql += ' AND location = ?';
         prodParams.push(location);
       }

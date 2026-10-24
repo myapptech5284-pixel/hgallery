@@ -1,5 +1,5 @@
 import React from 'react';
-import { User, LocationType } from '../types.ts';
+import { User, LocationType, LOCATION_TYPES, LOCATION_LABEL, LOCATION_HEADER_ACTIVE } from '../types.ts';
 import {
   ShoppingCart,
   Package,
@@ -15,6 +15,7 @@ import {
   BookOpen,
   Receipt,
   Tag,
+  Wrench,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -67,35 +68,34 @@ export const Header: React.FC<HeaderProps> = ({
                 معرض حور
               </span>
               <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block leading-tight">
-                نظام الإدارة المتكامل للأدوات المنزلية والمكتبة
+                نظام الإدارة المتكامل للأدوات المنزلية والمكتبة والأدوات الكهربائية
               </span>
             </div>
           </div>
 
-          {/* Location Toggle Indicator */}
+          {/* Location Toggle Indicator — one button per branch, driven by the shared
+              table so adding a branch later needs no change here. */}
           <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200/80 mr-2">
-            <button
-              onClick={() => onLocationChange('gallery')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                activeLocation === 'gallery'
-                  ? 'bg-white text-emerald-700 shadow-xs border border-slate-200/60'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <Store className="w-3.5 h-3.5 text-emerald-600" />
-              <span>المعرض</span>
-            </button>
-            <button
-              onClick={() => onLocationChange('stationery')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                activeLocation === 'stationery'
-                  ? 'bg-white text-indigo-700 shadow-xs border border-slate-200/60'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <BookOpen className="w-3.5 h-3.5 text-indigo-600" />
-              <span>المكتبة</span>
-            </button>
+            {LOCATION_TYPES.map((loc) => (
+              <button
+                key={loc}
+                onClick={() => onLocationChange(loc)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  activeLocation === loc
+                    ? LOCATION_HEADER_ACTIVE[loc]
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                {loc === 'gallery' ? (
+                  <Store className="w-3.5 h-3.5 text-emerald-600" />
+                ) : loc === 'stationery' ? (
+                  <BookOpen className="w-3.5 h-3.5 text-indigo-600" />
+                ) : (
+                  <Wrench className="w-3.5 h-3.5 text-amber-600" />
+                )}
+                <span>{LOCATION_LABEL[loc]}</span>
+              </button>
+            ))}
           </div>
         </div>
 

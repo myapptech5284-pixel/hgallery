@@ -5,6 +5,9 @@ import {
   InstallmentRecord,
   LedgerEntry,
   User,
+  LocationType,
+  LOCATION_LABEL,
+  LOCATION_BADGE,
 } from '../types.ts';
 import { api } from '../services/api.ts';
 import {
@@ -43,8 +46,6 @@ interface CustomerLedgerModalProps {
 type LedgerTab = 'statement' | 'invoices' | 'installments' | 'returns';
 
 const money = (value: any) => (Number(value) || 0).toFixed(2);
-
-const LOCATION_LABEL: Record<string, string> = { gallery: 'المعرض', stationery: 'المكتبة' };
 
 const TABS: { id: LedgerTab; label: string; icon: any }[] = [
   { id: 'statement', label: 'كشف الحساب', icon: History },
@@ -416,9 +417,7 @@ export const CustomerLedgerModal: React.FC<CustomerLedgerModalProps> = ({
                                             <span
                                               key={loc}
                                               className={`px-1.5 py-0.5 rounded text-[9px] font-bold inline-block w-fit ${
-                                                loc === 'stationery'
-                                                  ? 'bg-indigo-100 text-indigo-700'
-                                                  : 'bg-emerald-100 text-emerald-700'
+                                                LOCATION_BADGE[loc as LocationType] || 'bg-slate-100 text-slate-700'
                                               }`}
                                             >
                                               {LOCATION_LABEL[loc] || loc}
@@ -491,9 +490,8 @@ export const CustomerLedgerModal: React.FC<CustomerLedgerModalProps> = ({
                                                 <td className="p-2">
                                                   <span
                                                     className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
-                                                      (item.location || invoice.location) === 'stationery'
-                                                        ? 'bg-indigo-100 text-indigo-700'
-                                                        : 'bg-emerald-100 text-emerald-700'
+                                                      LOCATION_BADGE[(item.location || invoice.location) as LocationType] ||
+                                                      'bg-slate-100 text-slate-700'
                                                     }`}
                                                   >
                                                     {LOCATION_LABEL[item.location || invoice.location] || '-'}
