@@ -410,10 +410,23 @@ function createWindow() {
   // Anything that might be intercepting events at the renderer level
   // (some Windows accessibility tools, IME compositors, third-party
   // Chromium extensions loaded by the renderer) cannot stop the event
-  // from being observed here. We use this as a defensive observation
-  // point + a guarantee that the default browser behaviour for
-  // `Ctrl+S` / `Ctrl+P` (Save Page / Print) is suppressed — even if
-  // some library in the renderer forgets to call `preventDefault()`.
+  // from being observed here, so we use it as a defensive observation point.
+  //
+  // CRITICAL: we must NOT call `event.preventDefault()` here.
+  // Electron's documented behaviour for `before-input-event` is that
+  // "Calling event.preventDefault will prevent the page keydown/keyup events
+  // and the menu shortcuts from being dispatched" — i.e. it does not merely
+  // suppress the browser's default action, it SWALLOWS the key event so the
+  // renderer's own handler never runs at all.
+  //
+  // The previous build called preventDefault() for Alt+S / Ctrl+S with the
+  // intent of suppressing Chromium's "Save Page" default. The real effect was
+  // that Ctrl+S and Alt+S were dead inside the packaged app: the invoice was
+  // never saved by the shortcut and the search box was never focused — while
+  // the very same code worked in a plain browser. The fix is to let the event
+  // through: the renderer's handlers already call `preventDefault()` on the
+  // DOM event themselves, and this app's custom menu registers no Ctrl+S
+  // accelerator, so there is no browser default left to suppress.
   mainWindow.webContents.on('before-input-event', (event, input) => {
     try {
       // input.type === 'keyDown' | 'keyUp'
@@ -426,11 +439,8 @@ function createWindow() {
                   || input.code === 'KeyS';
       const isAltS = input.alt && !mod && isSKey;
       const isCtrlS = mod && !input.alt && !input.shift && isSKey;
-      if (isAltS || isCtrlS) {
-        // Suppress the Chromium default behaviour (Save Page, Print, etc.)
-        // so the renderer's handler is the only thing that runs.
-        event.preventDefault();
-      }
+      // NOTE: deliberately no event.preventDefault() here — see the comment
+      // above. Swallowing the event here is what broke Ctrl+S / Alt+S.
       // (Optional) emit a small counter that the renderer can read to
       // confirm events are arriving at the main process. Useful in
       // DevTools / future diagnostics — invisible to the user.
@@ -514,7 +524,7 @@ function buildMenu() {
               type: 'info',
               title: 'حول البرنامج',
               message: 'نظام إدارة معرض حور',
-              detail: 'الإصدار: 6.0.3\nتطبيق Windows مستقل بدون سيرفر محلي أو متصفح.\n© Hawr Gallery Inc.',
+              detail: 'الإصدار: 7.0.2\nتطبيق Windows مستقل بدون سيرفر محلي أو متصفح.\n© Hawr Gallery Inc.',
               buttons: ['حسناً'],
             });
           },
@@ -621,14 +631,86 @@ ipcMain.handle('hawr:selectBackupFolder', async () => {
 // (no per-day files). A `last-backup.json` file is written alongside
 // the backup with the timestamp, so we can detect when the next daily
 // backup is due.
-function performBackupTo(target) {
+// Retention for the automatic copies: an automatic backup is only deleted
+// once it is OLDER than this. With one copy per minute that keeps roughly 20
+// consecutive snapshots — enough to roll back to any point in the last 20
+// minutes, which is exactly the window disaster recovery needs.
+const AUTO_BACKUP_RETENTION_MS = 20 * 60 * 1000;
+
+// Directory-name prefixes. The retention sweep ONLY ever deletes directories
+// starting with AUTO_PREFIX, so a deliberate manual backup (MANUAL_PREFIX) and
+// anything else the owner keeps in that folder are never touched.
+const AUTO_PREFIX = 'hawr-auto-';
+const MANUAL_PREFIX = 'hawr-manual-';
+
+/**
+ * Delete automatic backups older than the retention window.
+ *
+ * Safety rules, in order of importance:
+ *  - only entries that are directories,
+ *  - only names starting with AUTO_PREFIX (never a file, never anything else
+ *    the user put in the folder),
+ *  - age measured from the directory's own mtime.
+ * Anything failing a check is left alone.
+ */
+function pruneOldAutoBackups(rootDir) {
+  const result = { removed: 0, kept: 0, skipped: 0 };
+  let entries = [];
+  try {
+    entries = fs.readdirSync(rootDir, { withFileTypes: true });
+  } catch (_) {
+    return result;
+  }
+  const cutoff = Date.now() - AUTO_BACKUP_RETENTION_MS;
+  for (const e of entries) {
+    if (!e.isDirectory()) { result.skipped++; continue; }
+    if (!e.name.startsWith(AUTO_PREFIX)) { result.skipped++; continue; }
+    const p = path.join(rootDir, e.name);
+    let mtimeMs = 0;
+    try { mtimeMs = fs.statSync(p).mtimeMs; } catch (_) { result.skipped++; continue; }
+    if (mtimeMs >= cutoff) { result.kept++; continue; }
+    try {
+      fs.rmSync(p, { recursive: true, force: true });
+      result.removed++;
+    } catch (_) { result.skipped++; }
+  }
+  return result;
+}
+
+// Build a sortable local-time stamp: hawr-auto-20261015-013045-123
+function backupStamp(date, prefix) {
+  const p = (n, w = 2) => String(n).padStart(w, '0');
+  return (
+    prefix +
+    date.getFullYear() + p(date.getMonth() + 1) + p(date.getDate()) +
+    '-' + p(date.getHours()) + p(date.getMinutes()) + p(date.getSeconds()) +
+    '-' + p(date.getMilliseconds(), 3)
+  );
+}
+
+/**
+ * Copy the live data directory into a fresh timestamped folder under `target`.
+ *
+ * Every call writes a NEW folder instead of overwriting a single one, so the
+ * last 20 minutes of snapshots all coexist. Old automatic folders are then
+ * pruned by age; manual ones are kept forever.
+ *
+ * @param {string} target destination folder chosen by the owner
+ * @param {{auto?: boolean}} [opts] `auto: true` for the periodic scheduler
+ */
+function performBackupTo(target, opts) {
+  const isAuto = !!(opts && opts.auto);
   if (!target) return { ok: false, error: 'لم يتم تحديد مكان الحفظ' };
   if (!fs.existsSync(target)) {
     try { fs.mkdirSync(target, { recursive: true }); } catch (_) { /* ignore */ }
   }
-  // Erase the previous backup so the new one fully replaces it.
-  const backupDir = path.join(target, 'hawr-latest-backup');
-  try { fs.rmSync(backupDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+
+  const backupRoot = path.join(target, 'hawr-auto-backup');
+  try { fs.mkdirSync(backupRoot, { recursive: true }); } catch (_) { /* ignore */ }
+
+  const now = new Date();
+  const stamp = backupStamp(now, isAuto ? AUTO_PREFIX : MANUAL_PREFIX);
+  const backupDir = path.join(backupRoot, stamp);
   fs.mkdirSync(backupDir, { recursive: true });
 
   const dataDir = getDataDir();
@@ -645,13 +727,17 @@ function performBackupTo(target) {
     try { stat = fs.statSync(src); } catch (_) { continue; }
     if (!stat.isFile()) continue;
     const dest = path.join(backupDir, f);
-    fs.copyFileSync(src, dest);
-    copiedFiles++;
-    totalBytes += stat.size;
+    try {
+      fs.copyFileSync(src, dest);
+      copiedFiles++;
+      totalBytes += stat.size;
+    } catch (_) { /* skip a file that is momentarily locked */ }
   }
-  // Write meta file with timestamp + file list
   const meta = {
-    timestamp: new Date().toISOString(),
+    timestamp: now.toISOString(),
+    folder: stamp,
+    auto: isAuto,
+    retentionMinutes: Math.round(AUTO_BACKUP_RETENTION_MS / 60000),
     copiedFiles,
     totalBytes,
     source: dataDir,
@@ -659,13 +745,58 @@ function performBackupTo(target) {
   try {
     fs.writeFileSync(path.join(backupDir, 'last-backup.json'), JSON.stringify(meta, null, 2), 'utf8');
   } catch (_) { /* ignore */ }
+
+  // Sweep old automatic copies AFTER the new one is safely on disk, so a
+  // failure here can never leave the owner with no backup at all.
+  const pruned = pruneOldAutoBackups(backupRoot);
+
+  // Latest pointer for the UI, kept outside the rotating folders.
+  try {
+    fs.mkdirSync(path.join(target, 'hawr-latest-backup'), { recursive: true });
+    fs.writeFileSync(
+      path.join(target, 'hawr-latest-backup', 'last-backup.json'),
+      JSON.stringify({ ...meta, path: backupDir, prunedRemoved: pruned.removed, prunedKept: pruned.kept }, null, 2),
+      'utf8'
+    );
+  } catch (_) { /* ignore */ }
+
   return {
     ok: true,
     path: backupDir,
     copiedFiles,
     totalBytes,
     timestamp: meta.timestamp,
+    prunedRemoved: pruned.removed,
+    prunedKept: pruned.kept,
   };
+}
+
+/** Newest backup meta under `target`, newest-first, across both prefixes. */
+function readLatestBackupMeta(target) {
+  const metas = [];
+  const pointer = path.join(target, 'hawr-latest-backup', 'last-backup.json');
+  try {
+    if (fs.existsSync(pointer)) metas.push(JSON.parse(fs.readFileSync(pointer, 'utf8')));
+  } catch (_) { /* ignore */ }
+
+  const backupRoot = path.join(target, 'hawr-auto-backup');
+  let entries = [];
+  try { entries = fs.readdirSync(backupRoot, { withFileTypes: true }); } catch (_) { entries = []; }
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    if (!e.name.startsWith(AUTO_PREFIX) && !e.name.startsWith(MANUAL_PREFIX)) continue;
+    const f = path.join(backupRoot, e.name, 'last-backup.json');
+    try {
+      if (fs.existsSync(f)) metas.push(JSON.parse(fs.readFileSync(f, 'utf8')));
+    } catch (_) { /* ignore */ }
+  }
+  let best = null;
+  for (const m of metas) {
+    const t = new Date(m && m.timestamp).getTime();
+    if (!Number.isFinite(t)) continue;
+    if (!best || t > best.t) best = { t, meta: m };
+  }
+  return best ? best.meta : null;
 }
 
 ipcMain.handle('hawr:runBackup', async (_event, opts) => {
@@ -683,21 +814,40 @@ ipcMain.handle('hawr:getLastBackup', async (_event, p) => {
   try {
     const target = p || '';
     if (!target) return { ok: false, error: 'لم يتم تحديد مكان' };
-    const metaFile = path.join(target, 'hawr-latest-backup', 'last-backup.json');
-    if (!fs.existsSync(metaFile)) return { ok: true, hasBackup: false };
-    const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
-    return { ok: true, hasBackup: true, ...meta };
+    const meta = readLatestBackupMeta(target);
+    if (!meta) return { ok: true, hasBackup: false };
+    // How many snapshots are currently retained, so the UI can say so.
+    let available = 0;
+    try {
+      available = fs.readdirSync(path.join(target, 'hawr-auto-backup'), { withFileTypes: true })
+        .filter((e) => e.isDirectory() && (e.name.startsWith(AUTO_PREFIX) || e.name.startsWith(MANUAL_PREFIX)))
+        .length;
+    } catch (_) { /* ignore */ }
+    return { ok: true, hasBackup: true, availableCopies: available, ...meta };
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
 });
 
-// Auto-backup interval — 20 minutes. Short enough to recover from a
-// crash with minimal data loss, long enough to be invisible to the user
-// while they're working.
-const AUTO_BACKUP_INTERVAL_MS = 20 * 60 * 1000;
+// How often a backup SHOULD happen — the number the owner asked for.
+const AUTO_BACKUP_INTERVAL_MS = 60 * 1000;
 
-// Run an auto backup if the saved target folder has one and > 20 min
+// How often we actually LOOK to see whether one is due. This must be much
+// smaller than AUTO_BACKUP_INTERVAL_MS.
+//
+// Why: these used to be the same number. setInterval() fires at "about"
+// 60s — always a little late, because timers drift and the backup run
+// itself takes time. So the tick would arrive at 59.9s, the guard would
+// see "less than 60s since the last one" and skip, and the next tick a
+// full minute later would be the one that finally ran. The effective
+// period silently became 2 minutes, which is exactly what was reported.
+//
+// Checking every few seconds instead means the first tick PAST the 60s
+// mark runs the backup, so it lands at ~60s rather than ~120s, and a busy
+// main process no longer pushes it out by a whole extra interval.
+const AUTO_BACKUP_TICK_MS = 5 * 1000;
+
+// Run an auto backup if the saved target folder has one and enough time
 // passed since the last one. Returns the result of the run (or null if
 // no folder configured).
 function runAutoBackupIfDue() {
@@ -706,23 +856,28 @@ function runAutoBackupIfDue() {
     if (!fs.existsSync(targetPath)) return null;
     const target = fs.readFileSync(targetPath, 'utf8').trim();
     if (!target) return null;
-    const metaFile = path.join(target, 'hawr-latest-backup', 'last-backup.json');
-    if (fs.existsSync(metaFile)) {
-      const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+    const meta = readLatestBackupMeta(target);
+    if (meta) {
       const last = new Date(meta.timestamp).getTime();
-      if (Date.now() - last < AUTO_BACKUP_INTERVAL_MS) {
-        return { ok: true, skipped: true, reason: 'مر أقل من 20 دقيقة على آخر نسخة' };
+      const elapsed = Date.now() - last;
+      if (Number.isFinite(last) && elapsed >= AUTO_BACKUP_INTERVAL_MS) {
+        // `auto: true` → timestamped folder, prunable after the retention
+        // window. A manual backup is never pruned.
+        return performBackupTo(target, { auto: true });
       }
+      // A corrupt timestamp or a clock that moved backwards must not make the
+      // backup skip forever with no visible reason — back up straight away.
+      if (!Number.isFinite(last)) return performBackupTo(target, { auto: true });
     }
-    return performBackupTo(target);
+    return performBackupTo(target, { auto: true });
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
 }
 
-// Periodic auto-backup scheduler. Once the user has chosen a backup
-// folder, we run a backup every AUTO_BACKUP_INTERVAL_MS regardless of
-// whether the app is in focus. The interval is cleared on app quit.
+// Periodic auto-backup scheduler. Once the user has chosen a backup folder
+// we check every AUTO_BACKUP_TICK_MS and back up whenever a full
+// AUTO_BACKUP_INTERVAL_MS has elapsed. The tick is cleared on app quit.
 let autoBackupInterval = null;
 function startAutoBackupScheduler() {
   if (autoBackupInterval) return;
@@ -732,13 +887,13 @@ function startAutoBackupScheduler() {
       if (result && result.ok && !result.skipped) {
         console.log('[hawr] auto-backup (periodic) done:', result);
       } else if (result && result.skipped) {
-        // quiet on skip — these happen every 20 min on a healthy install
+        // quiet on skip — normal between ticks
       } else if (result && !result.ok) {
         console.warn('[hawr] auto-backup (periodic) failed:', result.error);
       }
       // null = no folder configured; skip silently
     } catch (e) { console.warn('[hawr] auto-backup (periodic) exception:', e); }
-  }, AUTO_BACKUP_INTERVAL_MS);
+  }, AUTO_BACKUP_TICK_MS);
 }
 function stopAutoBackupScheduler() {
   if (autoBackupInterval) {
@@ -781,7 +936,7 @@ function maybePromptFirstTimeBackup() {
     cancelId: 1,
     title: 'إعداد النسخ الاحتياطي التلقائي',
     message: 'مرحباً! لإتمام الإعداد، اختر مجلد حفظ النسخ الاحتياطية اليومية.',
-    detail: 'سيتم حفظ نسخة كاملة من قاعدة البيانات (SQLite) في هذا المجلد كل 20 دقيقة، مع استبدال النسخة القديمة تلقائياً.\n\nاختر "اختر الآن" لتحديد المجلد، أو "لاحقاً" للتأجيل (يمكنك اختيار المجلد لاحقاً من شاشة "النسخ الاحتياطي").',
+    detail: 'سيتم حفظ نسخة كاملة من قاعدة البيانات (SQLite) في هذا المجلد كل دقيقة، مع استبدال النسخة القديمة تلقائياً.\n\nاختر "اختر الآن" لتحديد المجلد، أو "لاحقاً" للتأجيل (يمكنك اختيار المجلد لاحقاً من شاشة "النسخ الاحتياطي").',
     noLink: true,
   });
   if (choice !== 0) return; // user chose "لاحقاً"
@@ -800,7 +955,7 @@ function maybePromptFirstTimeBackup() {
         type: 'info',
         title: 'تم الإعداد',
         message: 'تم حفظ أول نسخة احتياطية بنجاح',
-        detail: `المسار: ${r.path}\n${r.copiedFiles} ملف (${(r.totalBytes / 1024).toFixed(1)} KB)\nكل 20 دقيقة سيتم تحديث هذه النسخة تلقائياً.`,
+        detail: `المسار: ${r.path}\n${r.copiedFiles} ملف (${(r.totalBytes / 1024).toFixed(1)} KB)\nكل دقيقة سيتم تحديث هذه النسخة تلقائياً.`,
       });
     }
   }
@@ -958,7 +1113,7 @@ app.whenReady().then(async () => {
     } catch (e) { console.warn('[hawr] auto-backup exception:', e); }
   }, 7000);
 
-  // Start the periodic auto-backup scheduler — runs every 20 minutes
+  // Start the periodic auto-backup scheduler — runs every 60 seconds
   // (AUTO_BACKUP_INTERVAL_MS) for the lifetime of the app process.
   startAutoBackupScheduler();
 }).catch((err) => {
