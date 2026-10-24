@@ -1,4 +1,81 @@
-export type LocationType = 'gallery' | 'stationery'; // المعرض | المكتبة
+// الفروع (الأقسام) التي لكل منها مخزون وتوريد وتقارير مستقلة تماماً:
+//   gallery   = المعرض         (أدوات منزلية)
+//   stationery= المكتبة         (قرطاسية)
+//   tools     = الأدوات الكهربائية
+//
+// الفرع الثالث أُضيف بنفس المعاملة تماماً: مخزون مستقل، توريد مستقل،
+// وتقارير مستقلة. الفاتورة الواحدة قد تخلط أصنافاً من الفروع الثلاثة،
+// والتمييز يتم على مستوى الصنف (invoice_items.location).
+export type LocationType = 'gallery' | 'stationery' | 'tools';
+
+export const LOCATION_TYPES: LocationType[] = ['gallery', 'stationery', 'tools'];
+
+/** يقبل قيمة كـ«موقع فرع» فقط — يُستخدم في كل حراسات الخادم. */
+export function isLocationType(value: unknown): value is LocationType {
+  return value === 'gallery' || value === 'stationery' || value === 'tools';
+}
+
+/** اسم الفرع كما يظهر للمستخدم. */
+export const LOCATION_LABEL: Record<LocationType, string> = {
+  gallery: 'المعرض',
+  stationery: 'المكتبة',
+  tools: 'الأدوات الكهربائية',
+};
+
+/** اسم مختصر — مناسب للشارات الضيّقة. */
+export const LOCATION_SHORT_LABEL: Record<LocationType, string> = {
+  gallery: 'معرض',
+  stationery: 'مكتبة',
+  tools: 'أدوات كهربائية',
+};
+
+/** لون شارة الفرع (خلفية + نص). */
+export const LOCATION_BADGE: Record<LocationType, string> = {
+  gallery: 'bg-emerald-100 text-emerald-800',
+  stationery: 'bg-indigo-100 text-indigo-800',
+  tools: 'bg-amber-100 text-amber-800',
+};
+
+/** لون الفرع النشط في أزرار التبويب. */
+export const LOCATION_ACTIVE: Record<LocationType, string> = {
+  gallery: 'bg-emerald-600 text-white shadow-xs',
+  stationery: 'bg-indigo-600 text-white shadow-xs',
+  tools: 'bg-amber-600 text-white shadow-xs',
+};
+
+/** لون نص الفرع (للكلام داخل الجداول). */
+export const LOCATION_TEXT: Record<LocationType, string> = {
+  gallery: 'text-emerald-700',
+  stationery: 'text-indigo-700',
+  tools: 'text-amber-700',
+};
+
+/** لون خط الفرع النشط في مبدّل الرأس العام. */
+export const LOCATION_HEADER_ACTIVE: Record<LocationType, string> = {
+  gallery: 'bg-white text-emerald-700 shadow-xs border border-slate-200/60',
+  stationery: 'bg-white text-indigo-700 shadow-xs border border-slate-200/60',
+  tools: 'bg-white text-amber-700 shadow-xs border border-slate-200/60',
+};
+
+/**
+ * يجمع مواقع الفروع الموجودة في أصناف فاتورة.
+ * فرع واحد = اسم الفاتورة، أكثر من فرع = «معرض + مكتبة» ونحوه.
+ */
+export function describeItemBranches(locations: string[]): { label: string; mixed: boolean } {
+  const set = new Set<string>();
+  for (const loc of locations) {
+    if (loc) set.add(loc);
+  }
+  if (set.size === 0) return { label: '—', mixed: false };
+  if (set.size === 1) {
+    const only = set.values().next().value as LocationType;
+    return { label: LOCATION_SHORT_LABEL[only] || '—', mixed: false };
+  }
+  const names = Array.from(set)
+    .map((l) => LOCATION_SHORT_LABEL[l as LocationType] || '')
+    .filter(Boolean);
+  return { label: names.join(' + '), mixed: true };
+}
 
 export type UserRole = 'admin' | 'supervisor' | 'employee'; // مدير | مشرف | موظف
 

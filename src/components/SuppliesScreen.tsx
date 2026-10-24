@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { SupplyMovement, LocationType, Supplier, User, Product } from '../types.ts';
+import { SupplyMovement, LocationType, Supplier, User, Product, LOCATION_TYPES, LOCATION_LABEL, LOCATION_BADGE, LOCATION_ACTIVE } from '../types.ts';
 import { api } from '../services/api.ts';
 import { useFormShortcuts, focusRef } from '../hooks/useFormShortcuts.ts';
+import { LocationTabs } from './LocationTabs.tsx';
 import {
   Truck,
   Plus,
@@ -13,6 +14,7 @@ import {
   CheckCircle2,
   X,
   Store,
+  Wrench,
   BookOpen,
   AlertCircle,
 } from 'lucide-react';
@@ -295,30 +297,11 @@ export const SuppliesScreen: React.FC<SuppliesScreenProps> = ({
         </div>
 
         <div className="flex items-center gap-3">
-          <div className="flex items-center bg-slate-200/80 p-1 rounded-xl">
-            <button
-              onClick={() => onLocationChange('gallery')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                activeLocation === 'gallery'
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <Store className="w-3.5 h-3.5" />
-              <span>توريدات المعرض</span>
-            </button>
-            <button
-              onClick={() => onLocationChange('stationery')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                activeLocation === 'stationery'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <BookOpen className="w-3.5 h-3.5" />
-              <span>توريدات المكتبة</span>
-            </button>
-          </div>
+          <LocationTabs
+            activeLocation={activeLocation}
+            onLocationChange={onLocationChange}
+            label={(loc) => `توريدات ${LOCATION_LABEL[loc]}`}
+          />
 
           <button
             onClick={() => {
@@ -458,12 +441,10 @@ export const SuppliesScreen: React.FC<SuppliesScreenProps> = ({
                     <td className="p-3.5">
                       <span
                         className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          s.location === 'gallery'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : 'bg-indigo-100 text-indigo-800'
+                          LOCATION_BADGE[s.location] || 'bg-slate-100 text-slate-700'
                         }`}
                       >
-                        {s.location === 'gallery' ? 'المعرض' : 'المكتبة'}
+                        {LOCATION_LABEL[s.location] || s.location}
                       </span>
                     </td>
                     <td className="p-3.5 text-slate-600 font-medium">
@@ -565,8 +546,11 @@ export const SuppliesScreen: React.FC<SuppliesScreenProps> = ({
                     onChange={(e) => setLocation(e.target.value as LocationType)}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:outline-none focus:border-indigo-500"
                   >
-                    <option value="gallery">المعرض (الأدوات المنزلية)</option>
-                    <option value="stationery">المكتبة</option>
+                    {LOCATION_TYPES.map((loc) => (
+                      <option key={loc} value={loc}>
+                        {loc === 'gallery' ? 'المعرض (الأدوات المنزلية)' : loc === 'stationery' ? 'المكتبة (القرطاسية)' : 'الأدوات الكهربائية'}
+                      </option>
+                    ))}
                   </select>
                 </div>
 

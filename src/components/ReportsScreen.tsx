@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { FinancialReport, LocationType, User, Employee } from '../types.ts';
+import { FinancialReport, LocationType, User, Employee , LOCATION_LABEL } from '../types.ts';
+import { LocationTabs } from './LocationTabs.tsx';
 import { api } from '../services/api.ts';
 import {
   BarChart3,
@@ -127,7 +128,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
     if (!report) return;
 
     const workbook = XLSX.utils.book_new();
-    const locArabic = activeLocation === 'gallery' ? 'المعرض' : 'المكتبة';
+    const locArabic = LOCATION_LABEL[activeLocation];
 
     // Summary Sheet
     const summaryData = [
@@ -222,36 +223,17 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
             <span>التقارير المالية والتشغيلية المستقلة</span>
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            فصل تام بين تقارير المعرض والمكتبة مع تطبيق معادلة صافي الربح الدقيقة
+            فصل تام بين تقارير المعرض والمكتبة والأدوات الكهربائية مع تطبيق معادلة صافي الربح الدقيقة
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           {/* Location Switcher */}
-          <div className="flex items-center bg-slate-200/80 p-1 rounded-xl">
-            <button
-              onClick={() => onLocationChange('gallery')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                activeLocation === 'gallery'
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <Store className="w-3.5 h-3.5" />
-              <span>تقارير المعرض</span>
-            </button>
-            <button
-              onClick={() => onLocationChange('stationery')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                activeLocation === 'stationery'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <BookOpen className="w-3.5 h-3.5" />
-              <span>تقارير المكتبة</span>
-            </button>
-          </div>
+          <LocationTabs
+            activeLocation={activeLocation}
+            onLocationChange={onLocationChange}
+            label={(loc) => `تقارير ${LOCATION_LABEL[loc]}`}
+          />
 
           <button
             onClick={handleExportExcel}
@@ -347,7 +329,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
               <div>
                 <span className="text-xs text-emerald-600 font-bold block">معادلة صافي الربح المعتمدة</span>
                 <h2 className="text-lg font-bold text-slate-900">
-                  ملخص الأرباح والتدفقات لـ {activeLocation === 'gallery' ? 'المعرض' : 'المكتبة'}
+                  ملخص الأرباح والتدفقات لـ {LOCATION_LABEL[activeLocation]}
                 </h2>
               </div>
               <span className="text-xs text-slate-500 font-mono bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">

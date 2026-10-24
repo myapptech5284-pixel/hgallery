@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Supplier, SupplierLedger, User } from '../types.ts';
+import { Supplier, SupplierLedger, User , LOCATION_LABEL } from '../types.ts';
 import { api } from '../services/api.ts';
 import {
   X,
@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Package,
   Store,
+  Wrench,
   BookOpen,
   Wallet,
   TrendingUp,
@@ -26,7 +27,6 @@ interface SupplierLedgerModalProps {
 }
 
 const money = (value: any) => (Number(value) || 0).toFixed(2);
-const LOCATION_LABEL: Record<string, string> = { gallery: 'المعرض', stationery: 'المكتبة' };
 
 /**
  * The complete supplier record on the purchase side: contact details,
@@ -304,6 +304,8 @@ export const SupplierLedgerModal: React.FC<SupplierLedgerModalProps> = ({
                                   <span className="inline-flex items-center gap-1">
                                     {supply.location === 'stationery' ? (
                                       <BookOpen className="w-3 h-3 text-indigo-400" />
+                                    ) : supply.location === 'tools' ? (
+                                      <Wrench className="w-3 h-3 text-amber-400" />
                                     ) : (
                                       <Store className="w-3 h-3 text-emerald-400" />
                                     )}

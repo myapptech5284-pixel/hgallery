@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { User, Product, LocationType, Invoice, InvoiceItem, InvoiceDraft, Customer } from '../types.ts';
+import { User, Product, LocationType, Invoice, InvoiceItem, InvoiceDraft, Customer, LOCATION_TYPES, LOCATION_LABEL, LOCATION_SHORT_LABEL, LOCATION_BADGE, LOCATION_TEXT, isLocationType, describeItemBranches } from '../types.ts';
 import { api } from '../services/api.ts';
 import { ThermalReceipt } from './ThermalReceipt.tsx';
 import {
@@ -25,9 +25,15 @@ import {
 interface PosScreenProps {
   currentUser: User;
   activeLocation: LocationType;
+  /**
+   * The shell registers a callback here so it can suspend the cart BEFORE the
+   * POS tab is left. Without it, switching tabs silently discarded whatever
+   * the cashier had entered.
+   */
+  onRegisterLeaveHandler?: (handler: (() => Promise<void>) | null) => void;
 }
 
-export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocation }) => {
+export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocation, onRegisterLeaveHandler }) => {
   // Products cache for search
   const [products, setProducts] = useState<Product[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -60,20 +66,40 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
   const [drafts, setDrafts] = useState<InvoiceDraft[]>([]);
   const [savingDraft, setSavingDraft] = useState(false);
   const [currentDraftId, setCurrentDraftId] = useState<string | null>(null);
-  const lastAutoSaveRef = useRef<number>(0);
+const lastAutoSaveRef = useRef<number>(0);
+
+  // Single source of truth for "which suspended invoice is this cart".
+  //
+  // This MUST be a ref, not just state: React state updates are async, so a
+  // save that started a moment ago has no id available yet. Two bugs came
+  // from that gap:
+  //   1. Two saves overlapping both saw no id and each created a NEW draft,
+  //      so one invoice ended up as several identical copies.
+  //   2. After suspending, the id stayed attached to the now-empty cart, so
+  //      suspending the NEXT invoice overwrote (and effectively deleted) the
+  //      one just saved — suspended invoices vanished on their own.
+  // The ref is updated synchronously the moment the server returns the id,
+  // and cleared as soon as the cart is detached from that draft.
+  const draftIdRef = useRef<string | null>(null);
+  const draftSaveInFlightRef = useRef<boolean>(false);
+
+  const attachDraftId = (id: string | null) => {
+    draftIdRef.current = id;
+    setCurrentDraftId(id);
+  };
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Load products for BOTH branches. A single invoice may mix gallery and
-  // stationery items; the two stay separate because every product row (and
-  // therefore its stock) belongs to exactly one location.
+  // Load products for ALL branches. A single invoice may mix items from the
+  // gallery, the stationery and the electrical-tools branch; the branches stay
+  // separate because every product row (and therefore its stock) belongs to
+  // exactly one location.
   const loadProducts = async () => {
     try {
-      const [galleryData, stationeryData] = await Promise.all([
-        api.getProducts({ location: 'gallery' }),
-        api.getProducts({ location: 'stationery' }),
-      ]);
-      setProducts([...(galleryData || []), ...(stationeryData || [])]);
+      const results = await Promise.all(
+        LOCATION_TYPES.map((loc) => api.getProducts({ location: loc }))
+      );
+      setProducts(results.flatMap((r) => r || []));
     } catch (err) {
       console.error('Failed to load products for POS:', err);
     }
@@ -164,13 +190,14 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
     }
   };
 
-  // Reset the sale when the cashier switches the global branch toggle.
+  // The branch toggle no longer decides what may be sold — POS loads both
+  // branches — so switching it must NOT throw away the invoice being built.
+  // It previously emptied the cart silently, which looked like a suspended
+  // invoice disappearing. Only the product search box is cleared.
   useEffect(() => {
-    setCartItems([]);
     setSearchQuery('');
     setMatchingProducts([]);
     setIsSearchDropdownOpen(false);
-    setPaidAmount(0);
   }, [activeLocation]);
 
   // Floating search logic: only show products when user types
@@ -461,10 +488,14 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
   };
 
   // ===== Suspended invoice (draft) management =====
+  //
+  // Sales are merged across both branches, so suspended invoices must be too:
+  // we deliberately do NOT filter by location here. A single draft may hold
+  // gallery items, stationery items, or both, and the cashier must find every
+  // suspended invoice regardless of which branch toggle happens to be active.
   const fetchDrafts = async () => {
     try {
       const list = await api.getInvoiceDrafts({
-        location: activeLocation,
         sellerId: currentUser.id,
       });
       setDrafts(list || []);
@@ -476,7 +507,18 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
   useEffect(() => {
     fetchDrafts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeLocation, currentUser.id]);
+  }, [currentUser.id]);
+
+  // A draft carries a branch label for display only. Mixed carts get "mixed"
+  // so the suspended invoice never looks like it belongs to one branch alone.
+  const draftBranchFor = (items: InvoiceItem[]): LocationType | 'mixed' => {
+    const set = new Set<string>();
+    for (const it of items || []) set.add((it as InvoiceItem).location || activeLocation);
+    if (set.size === 0) return activeLocation;
+    if (set.size > 1) return 'mixed';
+    const only = set.values().next().value;
+    return isLocationType(only) ? only : activeLocation;
+  };
 
   // Click-outside handler: close the search dropdown when clicking anywhere
   // outside of it OR on the dropdown's empty chrome (not a product item).
@@ -518,13 +560,17 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
     return { subtotal, totalDiscount };
   };
 
-  const handleSuspend = async () => {
-    if (cartItems.length === 0) {
-      setErrorMessage('لا توجد أصناف لتعليقها في الفاتورة');
-      return;
-    }
-    setSavingDraft(true);
-    setErrorMessage(null);
+  // Persist the cart as a suspended invoice. Shared by the manual "تعليق"
+  // button and by the automatic save that fires when the cashier leaves the
+  // POS tab, so both paths behave identically.
+  // Returns true when a draft was actually written.
+  const persistCartAsDraft = async (): Promise<boolean> => {
+    if (cartItems.length === 0) return false;
+    // One save at a time: if the background auto-save is still talking to the
+    // server, wait for it instead of firing a second request that would create
+    // a duplicate copy of the same invoice.
+    if (draftSaveInFlightRef.current) return false;
+    draftSaveInFlightRef.current = true;
     try {
       const { subtotal, totalDiscount } = computeSubtotalAndDiscount();
       const now = new Date();
@@ -536,11 +582,14 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
         cartItems.length +
         ' صنف';
       const res = await api.saveInvoiceDraft({
-        id: currentDraftId || undefined,
+        // Use the ref, not state: a background auto-save may have created this
+        // draft moments ago and React state has not caught up yet. Passing a
+        // stale null here is what produced duplicate copies.
+        id: draftIdRef.current || undefined,
         draftLabel,
         customerName: customerName.trim() || 'عميل نقدي',
         customerPhone: customerPhone.trim() || undefined,
-        location: activeLocation,
+        location: draftBranchFor(cartItems) as LocationType,
         sellerId: currentUser.id,
         sellerName: currentUser.name,
         sellerCode: currentUser.employeeCode,
@@ -558,7 +607,12 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
         notes: invoiceNotes,
       });
       if (res.success) {
-        setCurrentDraftId(res.draft?.id || null);
+        // The cart is emptied here, so it no longer belongs to any draft.
+        // Clearing the id is what stops the NEXT suspend from overwriting this
+        // invoice — the bug that made suspended invoices disappear on their
+        // own. The saved invoice stays listed until the user opens it,
+        // completes the sale, or presses delete.
+        attachDraftId(null);
         setCartItems([]);
         setCustomerName('عميل نقدي');
         setCustomerPhone('');
@@ -566,10 +620,30 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
         setInstallmentDueDate('');
         setInvoiceNotes('');
         await fetchDrafts();
+        return true;
+      }
+      return false;
+    } finally {
+      draftSaveInFlightRef.current = false;
+    }
+  };
+
+  const handleSuspend = async () => {
+    if (cartItems.length === 0) {
+      setErrorMessage('لا توجد أصناف لتعليقها في الفاتورة');
+      return;
+    }
+    setSavingDraft(true);
+    setErrorMessage(null);
+    try {
+      const saved = await persistCartAsDraft();
+      if (saved) {
         setErrorMessage('✓ تم تعليق الفاتورة بنجاح — يمكنك استكمالها لاحقاً');
         setTimeout(() => setErrorMessage(null), 3000);
+      } else if (draftSaveInFlightRef.current) {
+        setErrorMessage('جارٍ حفظ الفاتورة… انتظر ثانية واحدة ثم أعد المحاولة');
       } else {
-        setErrorMessage(res.error || 'فشل تعليق الفاتورة');
+        setErrorMessage('فشل تعليق الفاتورة');
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'تعذر تعليق الفاتورة');
@@ -577,6 +651,35 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
       setSavingDraft(false);
     }
   };
+
+  /**
+   * Called by the shell right before the POS tab is left.
+   *
+   * Leaving the POS used to throw the cart away: the screen unmounts and the
+   * items in it were never written anywhere, so the cashier came back to an
+   * empty sale with no trace of what they had entered. Now the cart is
+   * suspended automatically — it lands in "الفواتير المعلقة" and can be
+   * reopened from there. Nothing is ever silently discarded.
+   */
+  const suspendCartOnLeave = async (): Promise<void> => {
+    try {
+      if (cartItems.length === 0) return;
+      await persistCartAsDraft();
+    } catch (err) {
+      console.warn('[hawr] could not suspend cart on leaving POS:', err);
+    }
+  };
+
+  // Keep a stable wrapper so the shell's registration effect does not
+  // re-subscribe on every render.
+  const suspendCartOnLeaveRef = useRef(suspendCartOnLeave);
+  suspendCartOnLeaveRef.current = suspendCartOnLeave;
+
+  useEffect(() => {
+    if (!onRegisterLeaveHandler) return;
+    onRegisterLeaveHandler(() => suspendCartOnLeaveRef.current());
+    return () => onRegisterLeaveHandler(null);
+  }, [onRegisterLeaveHandler]);
 
   const loadDraft = async (id: string) => {
     try {
@@ -592,7 +695,7 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
         // Track the draft so saving later removes it (instead of creating a new invoice
         // in addition to the still-listed draft). The draft stays in the list until
         // the user either completes the sale (Ctrl+S) or explicitly deletes it.
-        setCurrentDraftId(d.id);
+        attachDraftId(d.id);
         setErrorMessage('✓ تم استدعاء الفاتورة المعلقة — يمكنك تعديلها ثم حفظها');
         setTimeout(() => setErrorMessage(null), 2500);
       } else {
@@ -623,20 +726,24 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
       const now = Date.now();
       if (now - lastAutoSaveRef.current < AUTO_SAVE_MS) return;
       lastAutoSaveRef.current = now;
+      // Never start a second save while one is still running: both would see
+      // no draft id and each create its own copy.
+      if (draftSaveInFlightRef.current) return;
+      draftSaveInFlightRef.current = true;
       // Silent save: same as suspend but no UI feedback and no form reset
       (async () => {
         try {
           const { subtotal, totalDiscount } = computeSubtotalAndDiscount();
           const now2 = new Date();
-          await api.saveInvoiceDraft({
-            id: currentDraftId || undefined,
+          const res = await api.saveInvoiceDraft({
+            id: draftIdRef.current || undefined,
             draftLabel:
               (customerName && customerName.trim() && customerName !== 'عميل نقدي'
                 ? customerName.trim()
                 : 'فاتورة معلقة') + ' — ' + cartItems.length + ' صنف',
             customerName: customerName.trim() || 'عميل نقدي',
             customerPhone: customerPhone.trim() || undefined,
-            location: activeLocation,
+            location: draftBranchFor(cartItems) as LocationType,
             sellerId: currentUser.id,
             sellerName: currentUser.name,
             sellerCode: currentUser.employeeCode,
@@ -653,15 +760,21 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
             installmentDueDate: paymentMethod === 'installment' ? installmentDueDate : undefined,
             notes: invoiceNotes,
           });
+          // Record the id the server just handed us. Ignoring it was the other
+          // half of the duplicate bug: every later save saw "no draft yet" and
+          // created yet another copy of the same invoice.
+          if (res.success && res.draft?.id) attachDraftId(res.draft.id);
           await fetchDrafts();
         } catch (e) {
           console.warn('auto-save draft failed:', e);
+        } finally {
+          draftSaveInFlightRef.current = false;
         }
       })();
     }, 60 * 1000);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cartItems, currentDraftId, customerName, customerPhone, paymentMethod, installmentDueDate, invoiceNotes, total, paidAmount]);
+  }, [cartItems, customerName, customerPhone, paymentMethod, installmentDueDate, invoiceNotes, total, paidAmount]);
 
   // Track user activity so auto-save respects idle time
   useEffect(() => {
@@ -688,7 +801,7 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
   useEffect(() => {
     if (successInvoice && currentDraftId) {
       api.deleteInvoiceDraft(currentDraftId).then(() => {
-        setCurrentDraftId(null);
+        attachDraftId(null);
         fetchDrafts();
       }).catch(() => {});
     }
@@ -817,7 +930,7 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
 
           <div className="flex items-center gap-2 text-xs font-semibold px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-600">
             <Layers className="w-4 h-4 text-emerald-600" />
-            <span>البيع يشمل المعرض والمكتبة معاً</span>
+            <span>البيع يشمل المعرض والمكتبة والأدوات الكهربائية معاً</span>
           </div>
         </div>
 
@@ -846,12 +959,10 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
                         {prod.name}
                         <span
                           className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
-                            prod.location === 'stationery'
-                              ? 'bg-indigo-100 text-indigo-700'
-                              : 'bg-emerald-100 text-emerald-700'
+                            LOCATION_BADGE[prod.location] || 'bg-slate-100 text-slate-700'
                           }`}
                         >
-                          {prod.location === 'stationery' ? 'المكتبة' : 'المعرض'}
+                          {LOCATION_SHORT_LABEL[prod.location] || '—'}
                         </span>
                       </span>
                       <span className="text-xs text-slate-400 font-mono">الكود: {prod.sku} | القسم: {prod.category}</span>
@@ -942,12 +1053,10 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
                           {item.productName}
                           <span
                             className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
-                              (item.location || activeLocation) === 'stationery'
-                                ? 'bg-indigo-100 text-indigo-700'
-                                : 'bg-emerald-100 text-emerald-700'
+                              LOCATION_BADGE[(item.location || activeLocation) as LocationType] || 'bg-slate-100 text-slate-700'
                             }`}
                           >
-                            {(item.location || activeLocation) === 'stationery' ? 'المكتبة' : 'المعرض'}
+                            {LOCATION_SHORT_LABEL[(item.location || activeLocation) as LocationType] || '—'}
                           </span>
                         </div>
                         <div className="text-[10px] text-slate-400 font-mono">
@@ -1277,11 +1386,11 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
                       <div
                         key={loc}
                         className={`flex justify-between text-[11px] px-2 py-1 rounded ${
-                          loc === 'gallery' ? 'bg-emerald-50 text-emerald-800' : 'bg-indigo-50 text-indigo-800'
+                          LOCATION_BADGE[loc as LocationType] || 'bg-slate-50 text-slate-800'
                         }`}
                       >
                         <span className="font-bold">
-                          {loc === 'gallery' ? 'المعرض' : 'المكتبة'} ({row.count})
+                          {LOCATION_LABEL[loc as LocationType] || loc} ({row.count})
                         </span>
                         <span className="font-mono font-bold">{row.total.toFixed(2)} ج.م</span>
                       </div>
@@ -1337,6 +1446,26 @@ export const PosScreen: React.FC<PosScreenProps> = ({ currentUser, activeLocatio
                         </div>
                         <div className="text-[10px] text-slate-500">
                           {d.itemCount} صنف · {(d.total || 0).toFixed(2)} ج.م
+                          {(() => {
+                            const items = d.items || [];
+                            // Branch label comes from the CENTRAL table in types.ts
+                            // so a draft holding electrical-tools items is never
+                            // mislabelled as "مكتبة" and a mixed draft lists every
+                            // branch it touches.
+                            const locations = items.map(
+                              (it) => (it as InvoiceItem).location || 'gallery'
+                            );
+                            const { label, mixed } = describeItemBranches(locations);
+                            const only = locations.find((l) => isLocationType(l)) as LocationType | undefined;
+                            const cls = mixed
+                              ? 'bg-slate-100 text-slate-700'
+                              : LOCATION_BADGE[only || 'gallery'];
+                            return (
+                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${cls} mr-1.5`}>
+                                {label}
+                              </span>
+                            );
+                          })()}
                         </div>
                       </div>
                       <button

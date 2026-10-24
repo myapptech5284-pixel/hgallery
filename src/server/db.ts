@@ -401,17 +401,72 @@ function initTables(database: Database): void {
   // historical line inherits its parent invoice's location and stays
   // reportable per branch. Runs AFTER the CREATE TABLEs so it is safe on a
   // brand-new database too.
+  //
+  // The backfill is guarded on its own: an unguarded failure here used to abort
+  // initTables() and silently skip every migration declared below it.
   try {
     database.run('ALTER TABLE invoice_items ADD COLUMN location TEXT');
   } catch (err) {
     // Column already exists, safe to ignore
   }
-  database.run(`
-    UPDATE invoice_items
-       SET location = (SELECT i.location FROM invoices i WHERE i.id = invoice_items.invoiceId)
-     WHERE location IS NULL
-       AND invoiceId IN (SELECT id FROM invoices WHERE location IS NOT NULL)
-  `);
+  try {
+    database.run(`
+      UPDATE invoice_items
+         SET location = (SELECT i.location FROM invoices i WHERE i.id = invoice_items.invoiceId)
+       WHERE location IS NULL
+         AND invoiceId IN (SELECT id FROM invoices WHERE location IS NOT NULL)
+    `);
+  } catch (err) {
+    console.error('[hawr] invoice_items location backfill failed:', err);
+  }
+}
+
+/** Does `table` already have `column`? Used by the self-heal path below. */
+function columnExists(database: Database, table: string, column: string): boolean {
+  try {
+    const res = database.exec(`PRAGMA table_info(${table});`);
+    if (!res.length) return false;
+    return res[0].values.some((row) => String(row[1]) === column);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Guarantee `invoice_items.location` exists on the LIVE database.
+ *
+ * A restored backup replaces the open database handle with whatever schema the
+ * backup file happened to carry. If that backup predates per-item locations,
+ * every subsequent invoice insert fails with
+ * "table invoice_items has no column named location" — and it keeps failing
+ * until the app is restarted, because nothing re-runs the migrations on a
+ * swapped handle.
+ *
+ * Exported so the invoice write path can call it cheaply (one PRAGMA) instead
+ * of relying on startup having migrated a database that was swapped underneath
+ * it. Safe to call repeatedly and a no-op once the column exists.
+ */
+export function ensureInvoiceItemsLocation(): boolean {
+  if (!db) return false;
+  try {
+    let changed = false;
+    if (!columnExists(db, 'invoice_items', 'location')) {
+      db.run('ALTER TABLE invoice_items ADD COLUMN location TEXT');
+      changed = true;
+    }
+    // Historical lines still missing a location inherit their parent's.
+    db.run(`
+      UPDATE invoice_items
+         SET location = (SELECT i.location FROM invoices i WHERE i.id = invoice_items.invoiceId)
+       WHERE location IS NULL
+         AND invoiceId IN (SELECT id FROM invoices WHERE location IS NOT NULL)
+    `);
+    if (changed) saveDb();
+    return true;
+  } catch (err: any) {
+    console.error('[hawr] ensureInvoiceItemsLocation failed:', err);
+    return false;
+  }
 }
 
 export async function hasAdmin(): Promise<boolean> {
@@ -512,9 +567,19 @@ export async function verifyAndRestoreBackup(backupBuffer: Buffer): Promise<{ su
   try {
     fs.writeFileSync(DB_FILE, backupBuffer);
     db = testDb;
+    // Migrate the restored schema before anything touches it. A backup taken
+    // from an older build carries the old table definitions, and handing that
+    // straight to the running app makes every invoice save fail with
+    // "table invoice_items has no column named location" until a restart.
+    try {
+      initTables(db);
+      saveDb();
+    } catch (migrationErr) {
+      console.error('[hawr] post-restore schema migration failed:', migrationErr);
+    }
     return {
       success: true,
-      message: 'تمت استعادة قاعدة البيانات بنجاح بعد التحقق من توقيع SQLite وسلامة الجداول',
+      message: 'تمت استعادة قاعدة البيانات بنجاح بعد التحقق من توقيع SQLite وسلامة الجداول وترحيل المخطط',
     };
   } catch (err: any) {
     return {

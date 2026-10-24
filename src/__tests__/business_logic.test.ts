@@ -1,4 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import {
+  LOCATION_TYPES,
+  LOCATION_LABEL,
+  LOCATION_BADGE,
+  isLocationType,
+  describeItemBranches,
+} from '../types.ts';
 
 describe('Hawr Gallery System Core Business Logic & Financial Formulas', () => {
   // 1. Profit Formula & Frozen Cost Verification
@@ -118,29 +125,67 @@ describe('Hawr Gallery System Core Business Logic & Financial Formulas', () => {
     });
   });
 
-  // 4. Location Isolation (Gallery vs Stationery)
-  describe('Operational Separation (Gallery vs Stationery)', () => {
-    it('strictly isolates products so a product belongs to either gallery or stationery', () => {
-      const product1 = { id: 'p1', name: 'طقم حلل', location: 'gallery' as const };
-      const product2 = { id: 'p2', name: 'كشكول سلك', location: 'stationery' as const };
+  // 4. Location Isolation (Gallery vs Stationery vs Electrical Tools)
+  describe('Operational Separation (Gallery vs Stationery vs Tools)', () => {
+    it('strictly isolates products so a product belongs to exactly one branch', () => {
+      const product1 = { id: 'p1', name: 'A', location: 'gallery' as const };
+      const product2 = { id: 'p2', name: 'B', location: 'stationery' as const };
+      const product3 = { id: 'p3', name: 'C', location: 'tools' as const };
 
       expect(product1.location).toBe('gallery');
       expect(product2.location).toBe('stationery');
+      expect(product3.location).toBe('tools');
       expect(product1.location).not.toBe(product2.location);
+      expect(product2.location).not.toBe(product3.location);
+      expect(product1.location).not.toBe(product3.location);
     });
 
     it('filters sales and inventory strictly according to selected location', () => {
       const allProducts = [
-        { id: 'p1', name: 'طقم معالق', location: 'gallery' },
-        { id: 'p2', name: 'طقم كاسات', location: 'gallery' },
-        { id: 'p3', name: 'أقلام جاف', location: 'stationery' },
+        { id: 'p1', location: 'gallery' },
+        { id: 'p2', location: 'gallery' },
+        { id: 'p3', location: 'stationery' },
+        { id: 'p4', location: 'tools' },
       ];
 
       const galleryProducts = allProducts.filter((p) => p.location === 'gallery');
       const stationeryProducts = allProducts.filter((p) => p.location === 'stationery');
+      const toolsProducts = allProducts.filter((p) => p.location === 'tools');
 
       expect(galleryProducts.length).toBe(2);
       expect(stationeryProducts.length).toBe(1);
+      expect(toolsProducts.length).toBe(1);
+    });
+
+    it('recognises exactly the three supported branches', () => {
+      expect(LOCATION_TYPES).toEqual(['gallery', 'stationery', 'tools']);
+      expect(isLocationType('gallery')).toBe(true);
+      expect(isLocationType('stationery')).toBe(true);
+      expect(isLocationType('tools')).toBe(true);
+      expect(isLocationType('unknown')).toBe(false);
+      expect(isLocationType(undefined)).toBe(false);
+    });
+
+    it('gives every branch its own label and colour', () => {
+      expect(LOCATION_LABEL.gallery).toBe('المعرض');
+      expect(LOCATION_LABEL.stationery).toBe('المكتبة');
+      expect(LOCATION_LABEL.tools).toBe('الأدوات الكهربائية');
+      const badges = new Set([
+        LOCATION_BADGE.gallery,
+        LOCATION_BADGE.stationery,
+        LOCATION_BADGE.tools,
+      ]);
+      expect(badges.size).toBe(3);
+    });
+
+    it('describes a mixed invoice as a combination of its branches', () => {
+      expect(describeItemBranches(['gallery']).label).toBe('معرض');
+      expect(describeItemBranches(['stationery']).label).toBe('مكتبة');
+      expect(describeItemBranches(['tools']).label).toBe('أدوات كهربائية');
+      const mixed = describeItemBranches(['gallery', 'tools']);
+      expect(mixed.mixed).toBe(true);
+      expect(mixed.label).toContain('معرض');
+      expect(mixed.label).toContain('أدوات كهربائية');
     });
   });
 });

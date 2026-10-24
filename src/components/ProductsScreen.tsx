@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { Product, LocationType, User } from '../types.ts';
+import { Product, LocationType, User, LOCATION_TYPES, LOCATION_LABEL, LOCATION_BADGE, LOCATION_ACTIVE, LOCATION_TEXT } from '../types.ts';
 import { api } from '../services/api.ts';
 import { useFormShortcuts, focusRef } from '../hooks/useFormShortcuts.ts';
+import { LocationTabs } from './LocationTabs.tsx';
 import {
   Package,
   Plus,
@@ -17,6 +18,7 @@ import {
   Check,
   X,
   Store,
+  Wrench,
   BookOpen,
 } from 'lucide-react';
 
@@ -61,6 +63,9 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
   const [transferQty, setTransferQty] = useState<number>(1);
   const [transferNotes, setTransferNotes] = useState('');
   const [transferError, setTransferError] = useState<string | null>(null);
+  // Where the product is going. Defaults to the first branch other than the
+  // current one, but the user can pick any of the three.
+  const [transferDestination, setTransferDestination] = useState<LocationType>('stationery');
 
   // Import states
   const [importErrors, setImportErrors] = useState<{ rowNumber: number; reason: string; data: any }[]>([]);
@@ -140,7 +145,7 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
     setSalePrice(0);
     setPurchaseCost(0);
     setMinStockAlert(5);
-    setCategory(activeLocation === 'gallery' ? 'أدوات منزلية' : 'قرطاسية');
+    setCategory(activeLocation === 'gallery' ? 'أدوات منزلية' : activeLocation === 'stationery' ? 'قرطاسية' : 'أدوات كهربائية');
     setFormError(null);
     setShowAddModal(true);
   };
@@ -231,6 +236,10 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
     setTransferQty(p.quantity);
     setTransferNotes('');
     setTransferError(null);
+    // Default destination = the first branch that is not the product's own.
+    setTransferDestination(
+      (LOCATION_TYPES.find((l) => l !== p.location) as LocationType) || 'stationery'
+    );
     setShowTransferModal(true);
   };
 
@@ -239,7 +248,9 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
     if (!transferTargetProduct) return;
     setTransferError(null);
 
-    const destinationLoc: LocationType = transferTargetProduct.location === 'gallery' ? 'stationery' : 'gallery';
+    // The destination is chosen by the user, not toggled automatically: with
+    // three branches a fixed "the other one" rule would be wrong.
+    const destinationLoc: LocationType = transferDestination;
 
     try {
       const res = await api.transferProduct({
@@ -270,7 +281,7 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
       'اسم المنتج': p.name,
       'الكود / الباركود': p.sku,
       'الوحدة': p.unit,
-      'الموقع': p.location === 'gallery' ? 'المعرض' : 'المكتبة',
+      'الموقع': LOCATION_LABEL[p.location] || p.location,
       'الكمية المتوفرة': p.quantity,
       'سعر الشراء': p.purchaseCost,
       'سعر البيع': p.salePrice,
@@ -283,7 +294,7 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
     const worksheet = XLSX.utils.json_to_sheet(dataToExport);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'المخزون');
-    const locArabic = activeLocation === 'gallery' ? 'المعرض' : 'المكتبة';
+    const locArabic = LOCATION_LABEL[activeLocation];
     XLSX.writeFile(workbook, `مخزون-${locArabic}-${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
@@ -339,31 +350,12 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {/* Location Switcher Tabs */}
-          <div className="flex items-center bg-slate-200/80 p-1 rounded-xl">
-            <button
-              onClick={() => onLocationChange('gallery')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                activeLocation === 'gallery'
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <Store className="w-3.5 h-3.5" />
-              <span>مخزون المعرض</span>
-            </button>
-            <button
-              onClick={() => onLocationChange('stationery')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                activeLocation === 'stationery'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <BookOpen className="w-3.5 h-3.5" />
-              <span>مخزون المكتبة</span>
-            </button>
-          </div>
+          {/* Location Switcher Tabs — one per branch, driven by the shared table */}
+          <LocationTabs
+            activeLocation={activeLocation}
+            onLocationChange={onLocationChange}
+            label={(loc) => `مخزون ${LOCATION_LABEL[loc]}`}
+          />
 
           <button
             onClick={handleExportExcel}
@@ -465,7 +457,7 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
               ) : products.length === 0 ? (
                 <tr>
                   <td colSpan={10} className="p-8 text-center text-slate-400">
-                    لا توجد منتجات مسجلة في {activeLocation === 'gallery' ? 'المعرض' : 'المكتبة'} حالياً
+                    لا توجد منتجات مسجلة في {LOCATION_LABEL[activeLocation]} حالياً
                   </td>
                 </tr>
               ) : (
@@ -482,12 +474,10 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
                       <td className="p-3.5">
                         <span
                           className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
-                            p.location === 'gallery'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-indigo-100 text-indigo-800'
+                            LOCATION_BADGE[p.location] || 'bg-slate-100 text-slate-700'
                           }`}
                         >
-                          {p.location === 'gallery' ? 'المعرض' : 'المكتبة'}
+                          {LOCATION_LABEL[p.location] || p.location}
                         </span>
                       </td>
                       <td className="p-3.5 text-center">
@@ -618,8 +608,11 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
                       onChange={(e) => setLocation(e.target.value as LocationType)}
                       className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:outline-none focus:border-emerald-500"
                     >
-                      <option value="gallery">المعرض (الأدوات المنزلية)</option>
-                      <option value="stationery">المكتبة</option>
+                      {LOCATION_TYPES.map((loc) => (
+                        <option key={loc} value={loc}>
+                          {loc === 'gallery' ? 'المعرض (الأدوات المنزلية)' : loc === 'stationery' ? 'المكتبة (القرطاسية)' : 'الأدوات الكهربائية'}
+                        </option>
+                      ))}
                     </select>
                     <span className="text-[10px] text-slate-400 mt-0.5 block">
                       القاعدة: ينتمي المنتج حصرياً إما للمعرض أو للمكتبة
@@ -749,9 +742,37 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
               <div className="p-3 bg-slate-50 rounded-xl space-y-1">
                 <div>المنتج: <b className="text-slate-800">{transferTargetProduct.name}</b></div>
                 <div>الكود: <span className="font-mono text-slate-600">{transferTargetProduct.sku}</span></div>
-                <div>الموقع الحالي: <b className="text-emerald-700">{transferTargetProduct.location === 'gallery' ? 'المعرض' : 'المكتبة'}</b></div>
-                <div>الموقع الجديد: <b className="text-indigo-700">{transferTargetProduct.location === 'gallery' ? 'المكتبة' : 'المعرض'}</b></div>
+                <div>
+                  الموقع الحالي:{' '}
+                  <b className={LOCATION_TEXT[transferTargetProduct.location] || 'text-slate-700'}>
+                    {LOCATION_LABEL[transferTargetProduct.location] || transferTargetProduct.location}
+                  </b>
+                </div>
+                <div>
+                  الموقع الجديد:{' '}
+                  <b className={LOCATION_TEXT[transferDestination] || 'text-slate-700'}>
+                    {LOCATION_LABEL[transferDestination] || transferDestination}
+                  </b>
+                </div>
                 <div>الرصيد المتاح: <b>{transferTargetProduct.quantity} {transferTargetProduct.unit}</b></div>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">نقل إلى الفرع *</label>
+                <select
+                  value={transferDestination}
+                  onChange={(e) => setTransferDestination(e.target.value as LocationType)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:outline-none focus:border-indigo-500"
+                >
+                  {LOCATION_TYPES.filter((l) => l !== transferTargetProduct.location).map((loc) => (
+                    <option key={loc} value={loc}>
+                      {LOCATION_LABEL[loc]}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-[10px] text-slate-400 mt-0.5 block">
+                  المخزون ينتقل بالكامل بين الفروع، ويبقى كل فرع مستقلاً تماماً.
+                </span>
               </div>
 
               <div>
